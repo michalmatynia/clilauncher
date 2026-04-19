@@ -1,0 +1,6 @@
+# SwiftPM / build artifacts
+/.build/
+/.swiftpm/
+
+# macOS metadata
+.DS_Store
