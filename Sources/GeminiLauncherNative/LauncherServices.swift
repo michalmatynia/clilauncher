@@ -1184,7 +1184,7 @@ struct PreflightService {
         if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && isLocalMongoConnection(settings.postgresMonitoring.trimmedConnectionURL) {
+        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.mongoConnection.isLocal {
             if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
@@ -1255,7 +1255,7 @@ struct PreflightService {
         if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && isLocalMongoConnection(settings.postgresMonitoring.trimmedConnectionURL) {
+        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.mongoConnection.isLocal {
             if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
@@ -1273,15 +1273,6 @@ struct PreflightService {
         return check
     }
 
-    private func isLocalMongoConnection(_ connectionURL: String) -> Bool {
-        guard let components = URLComponents(string: connectionURL),
-              components.scheme?.lowercased().hasPrefix("mongodb") == true,
-              let host = components.host?.lowercased()
-        else {
-            return false
-        }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0"
-    }
 }
 
 struct AppleScriptExecutionResult {

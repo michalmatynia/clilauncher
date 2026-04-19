@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v1
+        with:
+          swift-version: 5.9
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Run lint
+        env:
+          CI: 1
+        run: ./Scripts/lint.sh
+      - name: Run tests
+        run: ./Scripts/test.sh

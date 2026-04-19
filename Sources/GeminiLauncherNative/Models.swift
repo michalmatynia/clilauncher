@@ -798,6 +798,10 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
         connectionURL.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    var mongoConnection: MongoConnectionDescriptor {
+        MongoConnectionDescriptor(rawValue: trimmedConnectionURL)
+    }
+
     var trimmedDatabaseName: String {
         let trimmed = schemaName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "clilauncher_monitor" : trimmed
@@ -813,14 +817,7 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
     }
 
     var redactedConnectionDescription: String {
-        guard let components = URLComponents(string: trimmedConnectionURL), !trimmedConnectionURL.isEmpty else {
-            return "Not configured"
-        }
-        var redacted = components
-        if redacted.password != nil {
-            redacted.password = "••••••"
-        }
-        return redacted.string ?? "Configured"
+        mongoConnection.redactedString
     }
 
     var clampedRecentHistoryLimit: Int {

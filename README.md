@@ -52,6 +52,14 @@ swift build
 swift run CLILauncherNative
 ```
 
+## Quality and checks
+
+```bash
+make lint       # run SwiftLint (./Scripts/lint.sh)
+make test       # run swift test
+make ci         # lint + test
+```
+
 ## Repo setup
 
 ```bash

@@ -245,7 +245,7 @@ struct MonitoringDiagnosticsService {
                 )
             )
             let mongodResolved = builder.resolvedExecutable(settings.mongodExecutable)
-            let localMongo = isLocalMongoConnection(settings.trimmedConnectionURL)
+            let localMongo = settings.mongoConnection.isLocal
             statuses.append(
                 ToolStatus(
                     name: "mongod",
@@ -282,16 +282,6 @@ struct MonitoringDiagnosticsService {
         }
 
         return statuses
-    }
-
-    private func isLocalMongoConnection(_ connectionURL: String) -> Bool {
-        guard let components = URLComponents(string: connectionURL),
-              components.scheme?.lowercased().hasPrefix("mongodb") == true,
-              let host = components.host?.lowercased()
-        else {
-            return false
-        }
-        return host == "127.0.0.1" || host == "::1" || host == "localhost" || host == "0.0.0.0"
     }
 
     private func ensureDirectoryExists(at path: String) -> Bool {

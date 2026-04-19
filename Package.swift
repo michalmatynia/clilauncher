@@ -13,6 +13,13 @@ let package = Package(
         .executableTarget(
             name: "GeminiLauncherNative",
             path: "Sources/GeminiLauncherNative"
+        ),
+        .testTarget(
+            name: "CLILauncherNativeTests",
+            dependencies: [
+                "GeminiLauncherNative"
+            ],
+            path: "Tests/CLILauncherNativeTests"
         )
     ]
 )
