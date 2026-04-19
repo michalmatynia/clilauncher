@@ -1,50 +1,87 @@
-# CLILauncher (formerly GeminiLauncherNative) v24
+# CLILauncherNative
 
-This build focuses on **iTerm2 launch reliability** and **runtime observability** for multiple CLI agents.
+A macOS native launcher for running multiple AI CLI tools (and local tooling companions) with resilient startup sequencing and runtime diagnostics.
 
-## New in v24
+This project was previously published as *GeminiLauncherNative* and has kept source compatibility while expanding provider coverage.
 
-- **More reliable iTerm2 control**
-  - iTerm2 profile discovery now reads the local iTerm preferences domain/plist first instead of relying only on in-process AppleScript parsing.
-  - iTerm2 launch automation now runs through `/usr/bin/osascript`, which is a better fit for this SwiftPM/Xcode-run app than direct `NSAppleScript` execution.
-  - iTerm2 launch scripts now create the window/tab first and then `write text` into the session, which is more tolerant than the older inline `command` form.
-  - iTerm2 is explicitly resolved and launched before command dispatch.
+## What it does
 
-- **Better launch fallbacks**
-  - Gemini automation-runner profiles now fall back to direct-wrapper launch if the runner path is empty or missing.
-  - Kiro CLI resolution now also checks `kiro` and `kiro-cli` aliases.
+- Runs CLI sessions for configured providers (Gemini, Copilot, Codex, Claude Bypass, Kiro CLI, Ollama Launch).
+- Performs provider-aware preflight checks before launch (binary/config/env checks, command preview).
+- Launches commands into iTerm2 with safer AppleScript execution and startup sequencing.
+- Tracks launches in history and records structured runtime diagnostics.
+- Persists app state and local transcript/diagnostic artifacts in Application Support.
+- Includes monitoring features (session tracking, storage summaries, retention controls).
 
-- **Improved logs and observability**
-  - Added **debug log level** and **log categories** (`launch`, `preflight`, `iterm`, `monitoring`, etc.).
-  - Runtime logs can now be persisted to disk at:
-    - `~/Library/Application Support/CLILauncherNativeV24/Logs/runtime.log`
-  - Repeated log entries can be deduplicated in memory.
-  - The Log tab now supports level/category filtering, log-folder reveal, and diagnostic JSON export.
-  - Added a diagnostic export bundle with current preflight status, iTerm2 runtime info, command preview, AppleScript preview, monitoring summary, and recent logs.
+## Requirements
 
-- **Reduced refresh churn**
-  - Live diagnostics/profile refresh is now lightly debounced to avoid excessive repeated refresh work while editing settings.
+- macOS 13+
+- iTerm2 installed (for default terminal execution path)
+- Swift 5.9+ toolchain (via Xcode or SwiftPM)
+- Local CLI tools for providers you intend to use:
+  - `gemini-preview-iso` (and `node` for legacy Gemini wrapper flow)
+  - `copilot`
+  - `codex`
+  - `claude`
+  - `kiro` or `kiro-cli`
+  - `ollama`
 
-- **State migration**
-  - App state now lives in:
-    - `~/Library/Application Support/CLILauncherNativeV24/state.json`
-  - v24 attempts to migrate state from v20 and older folders.
+## Quick start
 
-## Monitoring features still included
+1. Open the package in Xcode:
 
-- PostgreSQL-backed terminal session tracking
-- Session/event/chunk inspector
-- Storage summary
-- Retention/pruning controls
-- Local transcript retention and export
+   ```bash
+   cd "/Users/michalmatynia/Desktop/NPM/2026/Gemini new Pull/clilauncher"
+   open Package.swift
+   ```
 
-## Build on macOS
+2. Build and run the `CLILauncherNative` target.
+3. In the app:
 
-1. Unzip the bundle.
-2. Open `Package.swift` in Xcode.
-3. Build and run `CLILauncherNative`.
+   - Create or pick a profile.
+   - Set working directory and runtime options.
+   - Run diagnostics preflight.
+   - Launch into iTerm2.
 
-## Notes
+## Build with SwiftPM
 
-- Targets **macOS 13+**.
-- This is **source code** for local Xcode build, not a signed/notarized app bundle.
+```bash
+swift build
+swift run CLILauncherNative
+```
+
+## Repo setup
+
+```bash
+git clone https://github.com/michalmatynia/clilauncher.git
+cd clilauncher
+git checkout main
+swift build
+```
+
+## Data and runtime paths
+
+- App state:
+  - `~/Library/Application Support/CLILauncherNativeV24/state.json`
+- Logs:
+  - `~/Library/Application Support/CLILauncherNativeV24/Logs/runtime.log`
+- Transcripts:
+  - `~/Library/Application Support/CLILauncherNativeV24/Transcripts`
+
+The app tries to migrate older state from legacy folders:
+
+- `GeminiLauncherNativeV24`, `GeminiLauncherNativeV20`, …, `GeminiLauncherNativeV8`
+
+## Documentation
+
+See [`ApplicationDocumentation.md`](ApplicationDocumentation.md) for setup details, launch profiles, preflight behavior, workbench orchestration, and troubleshooting tips.
+
+## Contributing
+
+- Keep edits in `Sources/GeminiLauncherNative`.
+- The app is intentionally provider-agnostic in architecture, with provider-specific defaults and execution definitions per profile.
+- If you add a new provider, keep command construction, defaults, and validation in provider definition/model code paths and wire new diagnostics accordingly.
+
+## License
+
+This repository currently has no explicit license file. Please add one if you need redistribution/reuse constraints.
