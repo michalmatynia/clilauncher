@@ -53,7 +53,7 @@ Workbenches launch multiple profiles as a single orchestrated plan:
 ### 2.3 Monitoring and history
 
 - launch history and errors/warnings are tracked in-app,
-- terminal process events are recorded with optional retention settings,
+- terminal process events are recorded with optional retention settings in a MongoDB-backed history store,
 - diagnostics exports are available as JSON bundles for sharing support issues.
 
 ## 3) Command flow
@@ -78,6 +78,10 @@ Execution resolution is centralized and provider-aware in `LauncherServices`.
 For provider-specific checks:
 
 - Gemini may require wrapper + Node in wrapper mode.
+- MongoDB-backed history tracking uses `mongosh`.
+- For local Mongo URLs (`127.0.0.1`/`localhost`), monitoring auto-starts a local `mongod` using:
+  - data directory `~/Library/Application Support/CLILauncherNativeV24/Mongo` by default (configurable),
+  - local workspace transcript/diagnostic folders as configured in settings.
 - Non-Gemini providers validate their own primary executable.
 - Model/version probes are run as part of preflight when possible.
 
@@ -114,6 +118,10 @@ Legacy state folders are migrated automatically when found:
 - **Missing CLI executable**
   - Check provider default executable value.
   - Ensure tool binary is visible to non-login GUI launch paths.
+- **Monitoring/Storage errors**
+  - Enable database writes and confirm the monitoring connection URL points to a valid Mongo database.
+  - Ensure `mongosh` is discoverable in app diagnostics and check the terminal monitoring status output for resolution details.
+  - For localhost URLs, ensure `mongod` resolves and the local data directory is writable so the app can auto-bootstrap the daemon.
 - **Gemini wrapper errors**
   - Confirm wrapper alias (`gemini-preview-iso` or configured alias) and `node` path.
   - Ensure working directory is expected by wrapper mode.

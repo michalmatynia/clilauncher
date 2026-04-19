@@ -8,9 +8,10 @@ private struct PreparedMonitoringContext: Sendable {
     var completionMarkerPath: String
 }
 
-private struct PSQLLaunchConfiguration: Sendable {
+private struct MongoLaunchConfiguration: Sendable {
     var executablePath: String
     var arguments: [String]
+    var connectionURL: String
     var environment: [String: String]
 }
 
@@ -64,7 +65,7 @@ private struct DatabaseSessionRow: Decodable {
             byteCount: byte_count,
             status: TerminalMonitorStatus(rawValue: status) ?? .failed,
             lastPreview: last_preview ?? "",
-            lastDatabaseMessage: last_database_message ?? "Loaded from PostgreSQL.",
+            lastDatabaseMessage: last_database_message ?? "Loaded from MongoDB.",
             lastError: last_error,
             statusReason: status_reason,
             exitCode: exit_code,
@@ -233,29 +234,64 @@ struct MonitoringDiagnosticsService {
         )
 
         if settings.enablePostgresWrites {
-            let psqlResolved = builder.resolvedExecutable(settings.psqlExecutable)
+            let mongoResolved = builder.resolvedExecutable(settings.psqlExecutable)
             statuses.append(
                 ToolStatus(
-                    name: "psql",
+                    name: "MongoDB CLI",
                     requested: settings.psqlExecutable,
-                    resolved: psqlResolved,
-                    detail: psqlResolved != nil ? "PostgreSQL CLI client resolved." : "psql executable was not found",
-                    isError: psqlResolved == nil
+                    resolved: mongoResolved,
+                    detail: mongoResolved != nil ? "MongoDB shell resolved." : "MongoDB shell executable was not found",
+                    isError: mongoResolved == nil
+                )
+            )
+            let mongodResolved = builder.resolvedExecutable(settings.mongodExecutable)
+            let localMongo = isLocalMongoConnection(settings.trimmedConnectionURL)
+            statuses.append(
+                ToolStatus(
+                    name: "mongod",
+                    requested: settings.mongodExecutable,
+                    resolved: mongodResolved,
+                    detail: localMongo
+                        ? (mongodResolved != nil ? "Local Mongo daemon executable resolved." : "Local Mongo connection uses localhost and requires mongod.")
+                        : (mongodResolved != nil ? "mongod executable resolved." : "mongod executable was not found."),
+                    isError: localMongo && settings.enablePostgresWrites && mongodResolved == nil
                 )
             )
             let hasConnection = !settings.trimmedConnectionURL.isEmpty
             statuses.append(
                 ToolStatus(
-                    name: "Postgres URL",
+                    name: "Mongo connection URL",
                     requested: settings.redactedConnectionDescription,
                     resolved: hasConnection ? settings.redactedConnectionDescription : nil,
                     detail: hasConnection ? "Connection string configured." : "Connection URL is empty.",
                     isError: !hasConnection
                 )
             )
+            if settings.enablePostgresWrites {
+                let dataDirReady = ensureDirectoryExists(at: settings.expandedLocalDataDirectory)
+                statuses.append(
+                    ToolStatus(
+                        name: "Local Mongo data directory",
+                        requested: settings.expandedLocalDataDirectory,
+                        resolved: dataDirReady ? settings.expandedLocalDataDirectory : nil,
+                        detail: dataDirReady ? "Ready for a local MongoDB data directory." : "Could not create local MongoDB data directory.",
+                        isError: !dataDirReady
+                    )
+                )
+            }
         }
 
         return statuses
+    }
+
+    private func isLocalMongoConnection(_ connectionURL: String) -> Bool {
+        guard let components = URLComponents(string: connectionURL),
+              components.scheme?.lowercased().hasPrefix("mongodb") == true,
+              let host = components.host?.lowercased()
+        else {
+            return false
+        }
+        return host == "127.0.0.1" || host == "::1" || host == "localhost" || host == "0.0.0.0"
     }
 
     private func ensureDirectoryExists(at path: String) -> Bool {
@@ -274,7 +310,801 @@ actor PostgresMonitoringWriter {
 
     func testConnection(settings: PostgresMonitoringSettings) throws -> String {
         guard settings.enablePostgresWrites else {
-            return "Postgres writes are disabled."
+            return "Mongo writes are disabled."
+        }
+        let script = """
+        (function() {
+            const targetDb = db.getSiblingDB(\(mongoStringLiteral(mongoDatabaseName(from: settings))) );
+            const ping = targetDb.adminCommand({ ping: 1 });
+            print(
+                JSON.stringify({
+                    ok: !!(ping && ping.ok === 1),
+                    db: targetDb.getName(),
+                    host: ping && ping.host ? ping.host : "unknown",
+                    version: targetDb.version()
+                })
+            );
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        guard let line = output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        else {
+            return "Connected to MongoDB."
+        }
+        return line
+    }
+
+    func ensureSchema(settings: PostgresMonitoringSettings) throws {
+        guard settings.enablePostgresWrites else { return }
+        guard !settings.localDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        _ = try runMongo(ensureSchemaScript(settings: settings), settings: settings)
+        let fingerprint = settings.trimmedConnectionURL + "|" + settings.trimmedSchemaName + "|" + settings.expandedLocalDataDirectory
+        initializedFingerprint = fingerprint
+    }
+
+    func recordSessionStart(_ session: TerminalMonitorSession, settings: PostgresMonitoringSettings) throws {
+        guard settings.enablePostgresWrites else { return }
+        try ensureSchema(settings: settings)
+
+        let metadata: [String: Any] = [
+            "capture_mode": session.captureMode.rawValue,
+            "working_directory": session.workingDirectory,
+            "transcript_path": session.transcriptPath
+        ]
+        let payload: [String: Any] = [
+            "session_id": session.id.uuidString,
+            "profile_id": session.profileID?.uuidString ?? NSNull(),
+            "profile_name": session.profileName,
+            "agent_kind": session.agentKind.rawValue,
+            "working_directory": session.workingDirectory,
+            "transcript_path": session.transcriptPath,
+            "launch_command": session.launchCommand,
+            "capture_mode": session.captureMode.rawValue,
+            "status": session.status.rawValue,
+            "started_at": Int64(session.startedAt.timeIntervalSince1970 * 1000),
+            "last_activity_at": NSNull(),
+            "ended_at": NSNull(),
+            "chunk_count": 0,
+            "byte_count": 0,
+            "last_error": NSNull(),
+            "last_preview": session.lastPreview,
+            "last_database_message": session.lastDatabaseMessage,
+            "status_reason": session.statusReason ?? NSNull(),
+            "exit_code": session.exitCode ?? NSNull(),
+            "metadata_json": metadata
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const payload = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+            targetDb.terminal_sessions.updateOne(
+                { session_id: payload.session_id },
+                {
+                    $set: {
+                        profile_id: payload.profile_id,
+                        profile_name: payload.profile_name,
+                        agent_kind: payload.agent_kind,
+                        working_directory: payload.working_directory,
+                        transcript_path: payload.transcript_path,
+                        launch_command: payload.launch_command,
+                        capture_mode: payload.capture_mode,
+                        status: payload.status,
+                        started_at: new Date(payload.started_at),
+                        chunk_count: payload.chunk_count,
+                        byte_count: payload.byte_count,
+                        last_error: payload.last_error,
+                        last_preview: payload.last_preview,
+                        last_database_message: payload.last_database_message,
+                        status_reason: payload.status_reason,
+                        exit_code: payload.exit_code,
+                        metadata_json: payload.metadata_json ? EJSON.stringify(payload.metadata_json) : null,
+                        last_activity_at: payload.last_activity_at
+                    },
+                    $setOnInsert: {
+                        session_id: payload.session_id,
+                        profile_id: payload.profile_id,
+                        started_at: new Date(payload.started_at)
+                    }
+                },
+                { upsert: true }
+            );
+
+            targetDb.terminal_session_events.insertOne({
+                session_id: payload.session_id,
+                event_type: "session_started",
+                status: payload.status,
+                event_at: new Date(payload.started_at),
+                message: "Session registered for monitoring.",
+                metadata_json: payload.metadata_json ? EJSON.stringify(payload.metadata_json) : null
+            });
+            print("ok");
+        })();
+        """
+        _ = try runMongo(script, settings: settings)
+    }
+
+    func recordChunk(
+        sessionID: UUID,
+        chunkIndex: Int,
+        data: Data,
+        preview: String,
+        totalChunks: Int,
+        totalBytes: Int,
+        capturedAt: Date,
+        status: TerminalMonitorStatus,
+        settings: PostgresMonitoringSettings
+    ) throws {
+        guard settings.enablePostgresWrites else { return }
+        try ensureSchema(settings: settings)
+
+        let payload: [String: Any] = [
+            "session_id": sessionID.uuidString,
+            "chunk_index": chunkIndex,
+            "source": "terminal_transcript",
+            "captured_at": Int64(capturedAt.timeIntervalSince1970 * 1000),
+            "byte_count": data.count,
+            "preview_text": preview,
+            "raw_base64": data.base64EncodedString(),
+            "status": status.rawValue,
+            "message": "Synced chunk \(totalChunks) to MongoDB.",
+            "total_chunks": totalChunks,
+            "total_bytes": totalBytes
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const payload = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+
+            targetDb.terminal_chunks.updateOne(
+                { session_id: payload.session_id, chunk_index: payload.chunk_index },
+                {
+                    $set: {
+                        source: payload.source,
+                        captured_at: new Date(payload.captured_at),
+                        byte_count: payload.byte_count,
+                        preview_text: payload.preview_text,
+                        raw_base64: payload.raw_base64
+                    }
+                },
+                { upsert: true }
+            );
+
+            targetDb.terminal_sessions.updateOne(
+                { session_id: payload.session_id },
+                {
+                    $set: {
+                        last_activity_at: new Date(payload.captured_at),
+                        chunk_count: payload.total_chunks,
+                        byte_count: payload.total_bytes,
+                        status: payload.status,
+                        last_preview: payload.preview_text,
+                        last_database_message: payload.message,
+                        status_reason: null,
+                        last_error: null
+                    }
+                }
+            );
+            print("ok");
+        })();
+        """
+        _ = try runMongo(script, settings: settings)
+    }
+
+    func recordStatus(
+        sessionID: UUID,
+        status: TerminalMonitorStatus,
+        eventType: String,
+        message: String?,
+        eventAt: Date,
+        endedAt: Date? = nil,
+        statusReason: String? = nil,
+        exitCode: Int? = nil,
+        settings: PostgresMonitoringSettings
+    ) throws {
+        guard settings.enablePostgresWrites else { return }
+        try ensureSchema(settings: settings)
+
+        let statusMessage = message ?? defaultMessage(for: status)
+        let endedAtValue = endedAt.map { Int64($0.timeIntervalSince1970 * 1000) } ?? NSNull()
+        let payload: [String: Any] = [
+            "session_id": sessionID.uuidString,
+            "status": status.rawValue,
+            "event_type": eventType,
+            "event_at": Int64(eventAt.timeIntervalSince1970 * 1000),
+            "message": statusMessage,
+            "status_reason": statusReason ?? NSNull(),
+            "exit_code": exitCode ?? NSNull(),
+            "ended_at": endedAtValue,
+            "metadata": [
+                "status_reason": statusReason ?? NSNull(),
+                "exit_code": exitCode ?? NSNull(),
+                "ended_at": endedAtValue,
+                "message": statusMessage
+            ]
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const payload = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+
+            targetDb.terminal_sessions.updateOne(
+                { session_id: payload.session_id },
+                {
+                    $set: {
+                        status: payload.status,
+                        last_activity_at: new Date(payload.event_at),
+                        ended_at: payload.ended_at != null ? new Date(payload.ended_at) : null,
+                        last_database_message: payload.message,
+                        status_reason: payload.status_reason,
+                        last_error: payload.status === "failed" ? payload.message : null,
+                        exit_code: payload.exit_code
+                    }
+                }
+            );
+
+            targetDb.terminal_session_events.insertOne({
+                session_id: payload.session_id,
+                event_type: payload.event_type,
+                status: payload.status,
+                event_at: new Date(payload.event_at),
+                message: payload.message,
+                metadata_json: payload.metadata ? EJSON.stringify(payload.metadata) : null
+            });
+            print("ok");
+        })();
+        """
+        _ = try runMongo(script, settings: settings)
+    }
+
+    func recordFailure(sessionID: UUID, message: String, status: TerminalMonitorStatus, settings: PostgresMonitoringSettings) throws {
+        try recordStatus(
+            sessionID: sessionID,
+            status: status,
+            eventType: "session_failed",
+            message: message,
+            eventAt: Date(),
+            endedAt: Date(),
+            statusReason: "monitoring_error",
+            exitCode: nil,
+            settings: settings
+        )
+    }
+
+    func recordCompletion(session: TerminalMonitorSession, settings: PostgresMonitoringSettings) throws {
+        try recordStatus(
+            sessionID: session.id,
+            status: session.status,
+            eventType: session.status == .completed ? "session_completed" : "session_exited_nonzero",
+            message: session.lastDatabaseMessage,
+            eventAt: session.endedAt ?? Date(),
+            endedAt: session.endedAt ?? Date(),
+            statusReason: session.statusReason,
+            exitCode: session.exitCode,
+            settings: settings
+        )
+    }
+
+    func fetchRecentSessions(settings: PostgresMonitoringSettings, limit: Int, lookbackHours: Int) throws -> [TerminalMonitorSession] {
+        guard settings.enablePostgresWrites else { return [] }
+        try ensureSchema(settings: settings)
+
+        let safeLimit = max(1, min(200, limit))
+        let safeLookbackHours = max(1, min(24 * 90, lookbackHours))
+        let payload: [String: Any] = [
+            "limit": safeLimit,
+            "lookback_hours": safeLookbackHours,
+            "cutoff_ms": Int64((Date().addingTimeInterval(-TimeInterval(safeLookbackHours) * 3600).timeIntervalSince1970) * 1000)
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const params = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+            const rows = targetDb.terminal_sessions.aggregate([
+                { $match: { started_at: { $gte: new Date(params.cutoff_ms) } } },
+                { $addFields: { _sort_at: { $ifNull: ["$last_activity_at", { $ifNull: ["$ended_at", "$started_at"] }] } } },
+                { $sort: { _sort_at: -1 } },
+                { $limit: params.limit }
+            ]).toArray();
+
+            rows.forEach((row) => {
+                print(EJSON.stringify({
+                    session_id: row.session_id,
+                    profile_id: row.profile_id ?? null,
+                    profile_name: row.profile_name,
+                    agent_kind: row.agent_kind,
+                    working_directory: row.working_directory,
+                    transcript_path: row.transcript_path,
+                    launch_command: row.launch_command,
+                    capture_mode: row.capture_mode,
+                    status: row.status,
+                    started_at_epoch: row.started_at ? row.started_at.getTime() / 1000 : null,
+                    last_activity_at_epoch: row.last_activity_at ? row.last_activity_at.getTime() / 1000 : null,
+                    ended_at_epoch: row.ended_at ? row.ended_at.getTime() / 1000 : null,
+                    chunk_count: row.chunk_count,
+                    byte_count: row.byte_count,
+                    last_error: row.last_error ?? null,
+                    last_preview: row.last_preview ?? "",
+                    last_database_message: row.last_database_message ?? "",
+                    status_reason: row.status_reason ?? null,
+                    exit_code: row.exit_code ?? null
+                }));
+            });
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        let rows = try parseMongoRows(output, as: DatabaseSessionRow.self)
+        return rows.map { $0.makeSession() }
+    }
+
+    func fetchSessionEvents(sessionID: UUID, settings: PostgresMonitoringSettings, limit: Int) throws -> [TerminalSessionEvent] {
+        guard settings.enablePostgresWrites else { return [] }
+        try ensureSchema(settings: settings)
+
+        let safeLimit = max(1, min(500, limit))
+        let payload: [String: Any] = [
+            "session_id": sessionID.uuidString,
+            "limit": safeLimit
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const params = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+            const rows = targetDb.terminal_session_events.find({ session_id: params.session_id }).sort({ event_at: -1, _id: -1 }).limit(params.limit).toArray();
+            rows.forEach((row, index) => {
+                print(EJSON.stringify({
+                    id: index + 1,
+                    session_id: row.session_id,
+                    event_type: row.event_type,
+                    status: row.status,
+                    event_at_epoch: row.event_at ? row.event_at.getTime() / 1000 : null,
+                    message: row.message ?? null,
+                    metadata_json: row.metadata_json ?? null
+                }));
+            });
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        let rows = try parseMongoRows(output, as: DatabaseSessionEventRow.self)
+        return rows.map { $0.makeEvent() }
+    }
+
+    func fetchSessionChunks(sessionID: UUID, settings: PostgresMonitoringSettings, limit: Int) throws -> [TerminalTranscriptChunk] {
+        guard settings.enablePostgresWrites else { return [] }
+        try ensureSchema(settings: settings)
+
+        let safeLimit = max(1, min(500, limit))
+        let payload: [String: Any] = [
+            "session_id": sessionID.uuidString,
+            "limit": safeLimit
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const params = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+            const rows = targetDb.terminal_chunks.find({ session_id: params.session_id }).sort({ chunk_index: -1 }).limit(params.limit).toArray();
+            rows.reverse().forEach((row, index) => {
+                print(EJSON.stringify({
+                    id: index + 1,
+                    session_id: row.session_id,
+                    chunk_index: row.chunk_index,
+                    source: row.source,
+                    captured_at_epoch: row.captured_at ? row.captured_at.getTime() / 1000 : null,
+                    byte_count: row.byte_count,
+                    preview_text: row.preview_text,
+                    raw_base64: row.raw_base64
+                }));
+            });
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        let rows = try parseMongoRows(output, as: DatabaseSessionChunkRow.self)
+        return rows.map { $0.makeChunk() }
+    }
+
+    func fetchStorageSummary(settings: PostgresMonitoringSettings) throws -> PostgresStorageSummary {
+        guard settings.enablePostgresWrites else { return PostgresStorageSummary() }
+        try ensureSchema(settings: settings)
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+
+            const sessionCount = targetDb.terminal_sessions.countDocuments({});
+            const activeSessionCount = targetDb.terminal_sessions.countDocuments({ status: { $in: ["prepared", "launching", "monitoring", "idle"] } });
+            const completedSessionCount = targetDb.terminal_sessions.countDocuments({ status: "completed" });
+            const failedSessionCount = targetDb.terminal_sessions.countDocuments({ status: { $in: ["failed", "stopped"] } });
+            const chunkCount = targetDb.terminal_chunks.countDocuments({});
+            const eventCount = targetDb.terminal_session_events.countDocuments({});
+
+            const logicalBytesDoc = targetDb.terminal_chunks.aggregate([
+                { $group: { _id: null, totalBytes: { $sum: { $ifNull: ["$byte_count", 0] } } } }
+            ]).toArray();
+            const chunkBytes = logicalBytesDoc.length > 0 && logicalBytesDoc[0].totalBytes != null ? logicalBytesDoc[0].totalBytes : 0;
+
+            const oldestSession = targetDb.terminal_sessions.find({}, { projection: { started_at: 1 } }).sort({ started_at: 1 }).limit(1).toArray();
+            const newestSession = targetDb.terminal_sessions.aggregate([
+                { $project: { sort_at: { $ifNull: ["$last_activity_at", { $ifNull: ["$ended_at", "$started_at"] }] } } },
+                { $sort: { sort_at: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 0, sort_at: 1 } }
+            ]).toArray();
+
+            print(EJSON.stringify({
+                session_count: Number(sessionCount),
+                active_session_count: Number(activeSessionCount),
+                completed_session_count: Number(completedSessionCount),
+                failed_session_count: Number(failedSessionCount),
+                chunk_count: Number(chunkCount),
+                event_count: Number(eventCount),
+                logical_transcript_bytes: Number(chunkBytes),
+                session_table_bytes: 0,
+                chunk_table_bytes: 0,
+                event_table_bytes: 0,
+                oldest_session_at_epoch: oldestSession.length > 0 && oldestSession[0].started_at ? oldestSession[0].started_at.getTime() / 1000 : null,
+                newest_session_at_epoch: newestSession.length > 0 && newestSession[0].sort_at ? newestSession[0].sort_at.getTime() / 1000 : null
+            }));
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        let rows = try parseMongoRows(output, as: DatabaseStorageSummaryRow.self)
+        guard let row = rows.first else {
+            return PostgresStorageSummary()
+        }
+        return row.makeSummary()
+    }
+
+    func pruneCompletedHistory(settings: PostgresMonitoringSettings, retentionDays: Int) throws -> PostgresPruneSummary {
+        let cutoffDate = Date().addingTimeInterval(-TimeInterval(max(1, retentionDays)) * 86_400)
+        guard settings.enablePostgresWrites else {
+            return PostgresPruneSummary(cutoffDate: cutoffDate)
+        }
+        try ensureSchema(settings: settings)
+
+        let safeRetentionDays = max(1, min(3650, retentionDays))
+        let payload: [String: Any] = [
+            "cutoff_ms": Int64(cutoffDate.timeIntervalSince1970 * 1000),
+            "retention_days": safeRetentionDays
+        ]
+
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const params = JSON.parse(\(mongoJSONLiteral(payload)));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+
+            const doomed = targetDb.terminal_sessions.find({
+                status: { $in: ["completed", "failed", "stopped"] },
+                $expr: { $lt: [ { $ifNull: ["$ended_at", { $ifNull: ["$last_activity_at", "$started_at"] }] }, new Date(params.cutoff_ms) ] }
+            }, { projection: { session_id: 1, byte_count: 1 } }).toArray();
+
+            const doomedIds = doomed.map((entry) => entry.session_id);
+            const deletedSessionCount = doomedIds.length;
+
+            let deletedChunkCount = 0;
+            let deletedChunkBytes = 0;
+            let deletedEventCount = 0;
+
+            if (doomedIds.length > 0) {
+                const doomedChunks = targetDb.terminal_chunks.find({ session_id: { $in: doomedIds } }).toArray();
+                doomedChunks.forEach((chunk) => {
+                    deletedChunkCount += 1;
+                    const chunkBytes = Number(chunk.byte_count || 0);
+                    deletedChunkBytes += Number(chunkBytes);
+                });
+
+                const eventDelete = targetDb.terminal_session_events.deleteMany({ session_id: { $in: doomedIds } });
+                deletedEventCount = Number(eventDelete.deletedCount || 0);
+
+                const chunkDelete = targetDb.terminal_chunks.deleteMany({ session_id: { $in: doomedIds } });
+                deletedChunkCount = Number(chunkDelete.deletedCount || deletedChunkCount);
+
+                const sessionDelete = targetDb.terminal_sessions.deleteMany({ session_id: { $in: doomedIds } });
+                const actualSessionCount = Number(sessionDelete.deletedCount || deletedSessionCount);
+
+                const result = {
+                    deleted_sessions: actualSessionCount,
+                    deleted_chunks: deletedChunkCount,
+                    deleted_events: deletedEventCount,
+                    deleted_chunk_bytes: deletedChunkBytes
+                };
+                print(EJSON.stringify(result));
+                return;
+            }
+
+            print(EJSON.stringify({
+                deleted_sessions: 0,
+                deleted_chunks: 0,
+                deleted_events: 0,
+                    deleted_chunk_bytes: 0
+            }));
+        })();
+        """
+
+        let output = try runMongo(script, settings: settings)
+        guard let line = output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        else {
+            return PostgresPruneSummary(cutoffDate: cutoffDate)
+        }
+
+        let row = try parseMongoRows(line, as: DatabasePruneSummaryRow.self).first
+        return PostgresPruneSummary(
+            cutoffDate: cutoffDate,
+            deletedSessions: row?.deleted_sessions ?? 0,
+            deletedChunks: row?.deleted_chunks ?? 0,
+            deletedEvents: row?.deleted_events ?? 0,
+            deletedChunkBytes: row?.deleted_chunk_bytes ?? 0
+        )
+    }
+
+    private func runMongo(_ script: String, settings: PostgresMonitoringSettings) throws -> String {
+        let launch = try makeMongoLaunchConfiguration(settings: settings)
+        do {
+            return try executeMongoLaunch(launch: launch, script: script)
+        } catch {
+            guard shouldRetryMongoLaunch(for: error, settings: settings) else { throw error }
+            try startLocalMongodIfNeeded(settings: settings)
+            return try executeMongoLaunch(launch: launch, script: script)
+        }
+    }
+
+    private func executeMongoLaunch(launch: MongoLaunchConfiguration, script: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launch.executablePath)
+        process.arguments = launch.arguments + ["--quiet", "--norc", "--eval", script, launch.connectionURL]
+        process.environment = launch.environment
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let errorText = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+
+        guard process.terminationStatus == 0 else {
+            throw LauncherError.validation("MongoDB execution failed: \(errorText.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return output
+    }
+
+    private func shouldRetryMongoLaunch(for error: Error, settings: PostgresMonitoringSettings) -> Bool {
+        guard settings.enablePostgresWrites else { return false }
+        guard isLocalMongoConnection(settings.trimmedConnectionURL) else { return false }
+        let message = error.localizedDescription.lowercased()
+        return message.contains("connection") && (
+            message.contains("refused") ||
+            message.contains("unreachable") ||
+            message.contains("timed out") ||
+            message.contains("server selection timeout") ||
+            message.contains("failed to connect") ||
+            message.contains("couldn't connect") ||
+            message.contains("could not connect") ||
+            message.contains("no connection")
+        )
+    }
+
+    private func startLocalMongodIfNeeded(settings: PostgresMonitoringSettings) throws {
+        let port = mongoPort(from: settings.trimmedConnectionURL)
+        guard let mongodPath = commandBuilder.resolvedExecutable(settings.mongodExecutable) else {
+            throw LauncherError.validation("Local MongoDB monitoring is configured for \(settings.redactedConnectionDescription), but mongod was not found.")
+        }
+        guard ensureDirectoryExists(at: settings.expandedLocalDataDirectory) else {
+            throw LauncherError.validation("Could not create local MongoDB data directory: \(settings.expandedLocalDataDirectory)")
+        }
+
+        let logPath = NSString(string: settings.expandedLocalDataDirectory).appendingPathComponent("mongod.log")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: mongodPath)
+        process.arguments = [
+            "--dbpath", settings.expandedLocalDataDirectory,
+            "--bind_ip", "127.0.0.1",
+            "--port", "\(port)",
+            "--fork",
+            "--logpath", logPath
+        ]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        let outputText = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let errorText = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let combined = [outputText, errorText].filter { !$0.isEmpty }.joined(separator: " ")
+
+        guard process.terminationStatus == 0 || combined.contains("already running") || combined.contains("Address already in use") else {
+            throw LauncherError.validation("Failed to start local mongod: \(combined)")
+        }
+
+        guard isMongoReachable(settings: settings) else {
+            throw LauncherError.validation("Local mongod did not become reachable on localhost:\(port). See \(logPath).")
+        }
+    }
+
+    private func isMongoReachable(settings: PostgresMonitoringSettings) -> Bool {
+        let pingScript = """
+        (function() {
+            try {
+                const ping = db.adminCommand({ ping: 1 });
+                print(JSON.stringify({ ok: ping && ping.ok === 1 }));
+            } catch (error) {
+                print(error.toString());
+                process.exit(1);
+            }
+        })();
+        """
+
+        guard let launch = try? makeMongoLaunchConfiguration(settings: settings) else {
+            return false
+        }
+
+        for _ in 0..<20 {
+            do {
+                let output = try executeMongoLaunch(launch: launch, script: pingScript)
+                if output.lowercased().contains("\"ok\":true") {
+                    return true
+                }
+            } catch {
+                // retry while mongod initializes
+            }
+            usleep(250_000)
+        }
+        return false
+    }
+
+    private func ensureSchemaScript(settings: PostgresMonitoringSettings) throws -> String {
+        let script = """
+        (function() {
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const targetDb = db.getSiblingDB(cfg.cfg);
+            const collections = targetDb.listCollections().toArray().map((entry) => entry.name);
+            if (!collections.includes("terminal_sessions")) {
+                targetDb.createCollection("terminal_sessions");
+            }
+            if (!collections.includes("terminal_chunks")) {
+                targetDb.createCollection("terminal_chunks");
+            }
+            if (!collections.includes("terminal_session_events")) {
+                targetDb.createCollection("terminal_session_events");
+            }
+
+            targetDb.terminal_sessions.createIndex({ session_id: 1 }, { unique: true });
+            targetDb.terminal_chunks.createIndex({ session_id: 1, chunk_index: 1 }, { unique: true });
+            targetDb.terminal_session_events.createIndex({ session_id: 1, event_at: -1, _id: -1 });
+            targetDb.terminal_sessions.createIndex({ status: 1, ended_at: -1, last_activity_at: -1, started_at: -1 });
+            print("MongoDB monitoring collections ready.");
+        })();
+        """
+        return script
+    }
+
+    private func makeMongoLaunchConfiguration(settings: PostgresMonitoringSettings) throws -> MongoLaunchConfiguration {
+        let executable = commandBuilder.resolvedExecutable(settings.psqlExecutable) ?? settings.psqlExecutable
+        guard !settings.trimmedConnectionURL.isEmpty else {
+            throw LauncherError.validation("Mongo connection URL is empty.")
+        }
+        guard let components = URLComponents(string: settings.trimmedConnectionURL),
+              let scheme = components.scheme?.lowercased(),
+              (scheme == "mongodb" || scheme == "mongodb+srv")
+        else {
+            throw LauncherError.validation("Mongo connection URL must begin with mongodb:// or mongodb+srv://")
+        }
+        _ = components
+        return MongoLaunchConfiguration(
+            executablePath: executable,
+            arguments: [],
+            connectionURL: settings.trimmedConnectionURL,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    private func mongoPort(from connectionURL: String) -> Int {
+        guard let components = URLComponents(string: connectionURL), let port = components.port else {
+            return 27017
+        }
+        return port
+    }
+
+    private func mongoDatabaseName(from settings: PostgresMonitoringSettings) -> String {
+        return mongoDatabaseName(from: settings.trimmedConnectionURL, fallback: settings.trimmedSchemaName)
+    }
+
+    private func mongoDatabaseName(from connectionString: String, fallback: String) -> String {
+        guard let components = URLComponents(string: connectionString) else {
+            return fallback.isEmpty ? "clilauncher_monitor" : fallback
+        }
+        let path = components.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            return fallback.isEmpty ? "clilauncher_monitor" : fallback
+        }
+        let segments = path.split(separator: "/")
+        guard let first = segments.first else {
+            return fallback.isEmpty ? "clilauncher_monitor" : fallback
+        }
+        return String(first)
+    }
+
+    private func parseMongoRows<T: Decodable>(_ output: String, as type: T.Type) throws -> [T] {
+        let decoder = JSONDecoder()
+        return try output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { line in
+                try decoder.decode(T.self, from: Data(line.utf8))
+            }
+    }
+
+    private func mongoStringLiteral(_ raw: String) -> String {
+        if let data = try? JSONSerialization.data(withJSONObject: raw, options: []),
+           let encoded = String(data: data, encoding: .utf8) {
+            return encoded
+        }
+        return "\"\""
+    }
+
+    private func mongoJSONLiteral(_ value: Any?) -> String {
+        guard let value,
+              JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return mongoStringLiteral(string)
+    }
+
+    private func defaultMessage(for status: TerminalMonitorStatus) -> String {
+        switch status {
+        case .prepared:
+            return "Session prepared."
+        case .launching:
+            return "Session launching."
+        case .monitoring:
+            return "Session monitoring in progress."
+        case .idle:
+            return "Session idle; no recent transcript activity."
+        case .completed:
+            return "Session completed successfully."
+        case .failed:
+            return "Session failed."
+        case .stopped:
+            return "Session stopped."
+        }
+    }
+}
+#if false
         }
         let output = try runPSQL("SELECT current_database() || ' as ' || current_user;", settings: settings)
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -429,7 +1259,7 @@ actor PostgresMonitoringWriter {
 
         let schema = try sqlIdentifier(settings.trimmedSchemaName)
         let rawBase64 = data.base64EncodedString()
-        let databaseMessage = "Synced chunk \(totalChunks) to PostgreSQL."
+        let databaseMessage = "Synced chunk \(totalChunks) to MongoDB."
         let sql = """
         INSERT INTO \(schema).terminal_chunks (
             session_id, chunk_index, source, captured_at, byte_count, preview_text, raw_base64
@@ -935,6 +1765,7 @@ actor PostgresMonitoringWriter {
         }
     }
 }
+#endif
 
 @MainActor
 final class TerminalMonitorStore: ObservableObject {
@@ -991,7 +1822,7 @@ final class TerminalMonitorStore: ObservableObject {
 
             var session = context.session
             session.status = .launching
-            session.lastDatabaseMessage = settings.postgresMonitoring.enablePostgresWrites ? "Awaiting first PostgreSQL sync." : "Local transcript capture started."
+            session.lastDatabaseMessage = settings.postgresMonitoring.enablePostgresWrites ? "Awaiting first MongoDB sync." : "Local transcript capture started."
             upsert(session)
 
             if settings.postgresMonitoring.enablePostgresWrites {
@@ -1000,16 +1831,16 @@ final class TerminalMonitorStore: ObservableObject {
                         try await writer.ensureSchema(settings: settings.postgresMonitoring)
                         try await writer.recordSessionStart(session, settings: settings.postgresMonitoring)
                         await MainActor.run {
-                            self.databaseStatus = "Postgres session logging active."
+                            self.databaseStatus = "MongoDB session logging active."
                             self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
                         }
                     } catch {
                         await MainActor.run {
                             if let index = self.sessions.firstIndex(where: { $0.id == session.id }) {
-                                self.sessions[index].lastDatabaseMessage = "Postgres unavailable: \(error.localizedDescription)"
+                            self.sessions[index].lastDatabaseMessage = "MongoDB unavailable: \(error.localizedDescription)"
                             }
-                            self.databaseStatus = "Postgres error"
-                            logger.log(.warning, "Postgres monitor setup failed; local transcript capture is still running: \(error.localizedDescription)", category: .monitoring)
+                            self.databaseStatus = "MongoDB write error"
+                            logger.log(.warning, "MongoDB monitor setup failed; local transcript capture is still running: \(error.localizedDescription)", category: .monitoring)
                         }
                     }
                 }
@@ -1080,12 +1911,12 @@ final class TerminalMonitorStore: ObservableObject {
     func testConnection(settings: AppSettings, logger: LaunchLogger) {
         guard settings.postgresMonitoring.enabled else {
             databaseStatus = "Monitoring disabled"
-            logger.log(.warning, "Enable terminal monitoring before testing PostgreSQL connectivity.", category: .monitoring)
+            logger.log(.warning, "Enable terminal monitoring before testing MongoDB connectivity.", category: .monitoring)
             return
         }
         guard settings.postgresMonitoring.enablePostgresWrites else {
             databaseStatus = "Local transcript monitoring only"
-            logger.log(.info, "Postgres writes are disabled; local transcript monitoring is still available.", category: .monitoring)
+            logger.log(.info, "MongoDB writes are disabled; local transcript monitoring is still available.", category: .monitoring)
             return
         }
 
@@ -1095,12 +1926,12 @@ final class TerminalMonitorStore: ObservableObject {
                 await MainActor.run {
                     self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
                     self.databaseStatus = "Connected • \(result)"
-                    logger.log(.success, "Postgres monitoring connection OK: \(result)", category: .monitoring)
+                    logger.log(.success, "MongoDB monitoring connection OK: \(result)", category: .monitoring)
                 }
             } catch {
                 await MainActor.run {
                     self.databaseStatus = "Connection failed"
-                    logger.log(.error, "Postgres monitoring connection failed: \(error.localizedDescription)", category: .monitoring)
+                    logger.log(.error, "MongoDB monitoring connection failed: \(error.localizedDescription)", category: .monitoring)
                 }
             }
         }
@@ -1128,13 +1959,13 @@ final class TerminalMonitorStore: ObservableObject {
                 await MainActor.run {
                     self.synchronizeHistoricalSessions(databaseSessions)
                     self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
-                    self.databaseStatus = "Loaded \(databaseSessions.count) recent session(s) from PostgreSQL."
-                    logger.log(.success, "Loaded \(databaseSessions.count) recent monitored session(s) from PostgreSQL.", category: .monitoring)
+                    self.databaseStatus = "Loaded \(databaseSessions.count) recent session(s) from MongoDB."
+                    logger.log(.success, "Loaded \(databaseSessions.count) recent monitored session(s) from MongoDB.", category: .monitoring)
                 }
             } catch {
                 await MainActor.run {
                     self.databaseStatus = "Recent session refresh failed"
-                    logger.log(.error, "Failed to load recent PostgreSQL-backed sessions: \(error.localizedDescription)", category: .monitoring)
+                    logger.log(.error, "Failed to load recent MongoDB-backed sessions: \(error.localizedDescription)", category: .monitoring)
                 }
             }
         }
@@ -1171,13 +2002,13 @@ final class TerminalMonitorStore: ObservableObject {
                     summary.eventTableBytes = databaseSummary.eventTableBytes
                     summary.oldestSessionAt = databaseSummary.oldestSessionAt
                     summary.newestSessionAt = databaseSummary.newestSessionAt
-                    notes.append("Loaded PostgreSQL storage totals.")
+                    notes.append("Loaded MongoDB storage totals.")
                 } catch {
-                    notes.append("PostgreSQL storage summary failed: \(error.localizedDescription)")
-                    logger.log(.warning, "Failed to load PostgreSQL storage summary: \(error.localizedDescription)", category: .monitoring)
+                    notes.append("MongoDB storage summary failed: \(error.localizedDescription)")
+                    logger.log(.warning, "Failed to load MongoDB storage summary: \(error.localizedDescription)", category: .monitoring)
                 }
             } else {
-                notes.append("Postgres writes are disabled; showing local transcript storage only.")
+                notes.append("MongoDB writes are disabled; showing local transcript storage only.")
             }
 
             if summary.transcriptFileCount > 0 {
@@ -1220,14 +2051,14 @@ final class TerminalMonitorStore: ObservableObject {
                         settings: monitoringSettings,
                         retentionDays: databaseRetentionDays
                     )
-                    notes.append("Deleted \(pruneSummary.deletedSessions) PostgreSQL session row(s).")
+                    notes.append("Deleted \(pruneSummary.deletedSessions) MongoDB session row(s).")
                 } catch {
-                    notes.append("PostgreSQL prune failed: \(error.localizedDescription)")
-                    logger.log(.error, "Failed to prune PostgreSQL monitor history: \(error.localizedDescription)", category: .monitoring)
+                    notes.append("MongoDB prune failed: \(error.localizedDescription)")
+                    logger.log(.error, "Failed to prune MongoDB monitor history: \(error.localizedDescription)", category: .monitoring)
                 }
             } else {
                 pruneSummary.cutoffDate = Date().addingTimeInterval(-TimeInterval(localRetentionDays) * 86_400)
-                notes.append("Postgres writes are disabled; pruning local transcript files only.")
+                notes.append("MongoDB writes are disabled; pruning local transcript files only.")
             }
 
             let localPrune = Self.pruneTranscriptDirectory(
@@ -1324,21 +2155,21 @@ final class TerminalMonitorStore: ObservableObject {
                     )
                     events = try await fetchedEvents
                     chunks = try await fetchedChunks
-                    loadNotes.append("Loaded \(events.count) event(s) and \(chunks.count) chunk(s) from PostgreSQL.")
+                    loadNotes.append("Loaded \(events.count) event(s) and \(chunks.count) chunk(s) from MongoDB.")
 
                     if transcriptText.isEmpty && !chunks.isEmpty {
                         transcriptText = chunks.map(\.text).joined()
                         transcriptTruncated = session.chunkCount > chunks.count
                         transcriptSource = transcriptTruncated
-                            ? "Reconstructed from the latest \(chunks.count) PostgreSQL transcript chunks."
-                            : "Reconstructed from PostgreSQL transcript chunks."
+                            ? "Reconstructed from the latest \(chunks.count) MongoDB transcript chunks."
+                            : "Reconstructed from MongoDB transcript chunks."
                     }
                 } catch {
-                    loadNotes.append("PostgreSQL detail fetch failed: \(error.localizedDescription)")
+                    loadNotes.append("MongoDB detail fetch failed: \(error.localizedDescription)")
                     logger.log(.warning, "Failed to load detailed monitor data for \(session.profileName): \(error.localizedDescription)", category: .monitoring)
                 }
             } else if session.isHistorical || !session.hasLocalTranscriptFile {
-                loadNotes.append("PostgreSQL detail loading is unavailable in the current settings.")
+                loadNotes.append("MongoDB detail loading is unavailable in the current settings.")
             }
 
             if transcriptSource.isEmpty {
@@ -1398,7 +2229,7 @@ final class TerminalMonitorStore: ObservableObject {
             byteCount: 0,
             status: .prepared,
             lastPreview: "",
-            lastDatabaseMessage: settings.enablePostgresWrites ? "Session prepared for PostgreSQL tracking." : "Local transcript capture only.",
+            lastDatabaseMessage: settings.enablePostgresWrites ? "Session prepared for MongoDB tracking." : "Local transcript capture only.",
             lastError: nil,
             statusReason: nil,
             exitCode: nil,
@@ -1507,7 +2338,7 @@ final class TerminalMonitorStore: ObservableObject {
         session.chunkCount += 1
         session.byteCount += data.count
         session.lastPreview = preview
-        session.lastDatabaseMessage = settings.enablePostgresWrites ? "Chunk \(session.chunkCount) queued for PostgreSQL." : "Chunk \(session.chunkCount) captured locally."
+        session.lastDatabaseMessage = settings.enablePostgresWrites ? "Chunk \(session.chunkCount) queued for MongoDB." : "Chunk \(session.chunkCount) captured locally."
         session.lastError = nil
         session.statusReason = nil
         upsert(session)
@@ -1527,13 +2358,13 @@ final class TerminalMonitorStore: ObservableObject {
                 settings: settings
             )
             if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
-                sessions[index].lastDatabaseMessage = "Synced chunk \(sessions[index].chunkCount) to PostgreSQL."
+                sessions[index].lastDatabaseMessage = "Synced chunk \(sessions[index].chunkCount) to MongoDB."
             }
         } catch {
             if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
-                sessions[index].lastDatabaseMessage = "Postgres sync failed: \(error.localizedDescription)"
+                sessions[index].lastDatabaseMessage = "MongoDB sync failed: \(error.localizedDescription)"
             }
-            databaseStatus = "Postgres write failed"
+            databaseStatus = "MongoDB write failed"
         }
     }
 
@@ -1562,9 +2393,9 @@ final class TerminalMonitorStore: ObservableObject {
             )
         } catch {
             if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
-                sessions[refreshedIndex].lastDatabaseMessage = "Postgres idle-state sync failed: \(error.localizedDescription)"
+                sessions[refreshedIndex].lastDatabaseMessage = "MongoDB idle-state sync failed: \(error.localizedDescription)"
             }
-            databaseStatus = "Postgres write failed"
+            databaseStatus = "MongoDB write failed"
         }
     }
 
@@ -1588,7 +2419,7 @@ final class TerminalMonitorStore: ObservableObject {
         sessions[index].statusReason = completion.reason
         sessions[index].lastError = completedSuccessfully ? nil : "Process exited with code \(completion.exitCode)."
         sessions[index].lastDatabaseMessage = settings.enablePostgresWrites
-            ? (completedSuccessfully ? "Session completed and synced to PostgreSQL." : "Session exited non-zero and was recorded in PostgreSQL.")
+                ? (completedSuccessfully ? "Session completed and synced to MongoDB." : "Session exited non-zero and was recorded in MongoDB.")
             : (completedSuccessfully ? "Session completed locally." : "Session exited non-zero.")
 
         let finalSession = sessions[index]
@@ -1601,9 +2432,9 @@ final class TerminalMonitorStore: ObservableObject {
                 try await writer.recordCompletion(session: finalSession, settings: settings)
             } catch {
                 if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
-                    sessions[refreshedIndex].lastDatabaseMessage = "Postgres completion sync failed: \(error.localizedDescription)"
+                    sessions[refreshedIndex].lastDatabaseMessage = "MongoDB completion sync failed: \(error.localizedDescription)"
                 }
-                databaseStatus = "Postgres write failed"
+                databaseStatus = "MongoDB write failed"
             }
         }
 
@@ -1639,9 +2470,9 @@ final class TerminalMonitorStore: ObservableObject {
             try await writer.recordFailure(sessionID: sessionID, message: message, status: .failed, settings: settings)
         } catch {
             if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
-                sessions[refreshedIndex].lastDatabaseMessage = "Postgres failure sync failed: \(error.localizedDescription)"
+                sessions[refreshedIndex].lastDatabaseMessage = "MongoDB failure sync failed: \(error.localizedDescription)"
             }
-            databaseStatus = "Postgres write failed"
+            databaseStatus = "MongoDB write failed"
         }
     }
 
@@ -1844,7 +2675,7 @@ final class TerminalMonitorStore: ObservableObject {
         let chunkBytes = ByteCountFormatter.string(fromByteCount: pruneSummary.deletedChunkBytes, countStyle: .file)
         return [
             "Pruned data older than \(pruneSummary.cutoffDate.formatted(date: .abbreviated, time: .omitted)).",
-            "Deleted \(pruneSummary.deletedSessions) session(s), \(pruneSummary.deletedChunks) chunk(s), and \(pruneSummary.deletedEvents) event row(s) from PostgreSQL (\(chunkBytes) of logical transcript data).",
+            "Deleted \(pruneSummary.deletedSessions) session(s), \(pruneSummary.deletedChunks) chunk(s), and \(pruneSummary.deletedEvents) event row(s) from MongoDB (\(chunkBytes) of logical transcript data).",
             "Deleted \(pruneSummary.deletedTranscriptFiles) local transcript file(s) (\(localBytes))."
         ].joined(separator: " ")
     }

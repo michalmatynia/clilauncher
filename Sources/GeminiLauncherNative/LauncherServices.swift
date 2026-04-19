@@ -1139,6 +1139,7 @@ struct PreflightService {
     let planner = LaunchPlanner()
     let discovery = ToolDiscoveryService()
     let companionLauncher = WorkspaceCompanionLauncher()
+    private let commandBuilder = CommandBuilder()
 
     func run(profile: LaunchProfile, settings: AppSettings, allProfiles: [LaunchProfile]) -> PreflightCheck {
         var check = PreflightCheck()
@@ -1181,7 +1182,17 @@ struct PreflightService {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output. Passwords or secrets typed in the terminal can be recorded.")
         }
         if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
-            check.errors.append("Postgres monitoring is enabled but the connection URL is empty.")
+            check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
+        }
+        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && isLocalMongoConnection(settings.postgresMonitoring.trimmedConnectionURL) {
+            if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
+                check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
+            }
+            if settings.postgresMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                check.errors.append("Local MongoDB URL is configured, but local Mongo data directory is empty.")
+            } else if !FileManager.default.fileExists(atPath: settings.postgresMonitoring.expandedLocalDataDirectory) {
+                check.warnings.append("Local Mongo data directory does not exist yet; it will be created on first monitoring write.")
+            }
         }
 
         do {
@@ -1242,7 +1253,15 @@ struct PreflightService {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output for launched workbench tabs.")
         }
         if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
-            check.errors.append("Postgres monitoring is enabled but the connection URL is empty.")
+            check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
+        }
+        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && isLocalMongoConnection(settings.postgresMonitoring.trimmedConnectionURL) {
+            if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
+                check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
+            }
+            if settings.postgresMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                check.errors.append("Local MongoDB URL is configured, but local Mongo data directory is empty.")
+            }
         }
 
         do {
@@ -1252,6 +1271,16 @@ struct PreflightService {
         }
 
         return check
+    }
+
+    private func isLocalMongoConnection(_ connectionURL: String) -> Bool {
+        guard let components = URLComponents(string: connectionURL),
+              components.scheme?.lowercased().hasPrefix("mongodb") == true,
+              let host = components.host?.lowercased()
+        else {
+            return false
+        }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0"
     }
 }
 

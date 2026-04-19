@@ -12,7 +12,7 @@ private enum MonitorSessionSourceFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: return "All sources"
         case .liveOnly: return "Live only"
-        case .postgresHistory: return "Postgres history"
+        case .postgresHistory: return "Mongo history"
         }
     }
 
@@ -166,7 +166,7 @@ struct MonitoringDashboardView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "This removes completed and failed PostgreSQL session history older than \(store.settings.postgresMonitoring.clampedDatabaseRetentionDays) day(s) and local transcript files older than \(store.settings.postgresMonitoring.clampedLocalTranscriptRetentionDays) day(s)."
+                "This removes completed and failed MongoDB session history older than \(store.settings.postgresMonitoring.clampedDatabaseRetentionDays) day(s) and local transcript files older than \(store.settings.postgresMonitoring.clampedLocalTranscriptRetentionDays) day(s)."
             )
         }
     }
@@ -181,7 +181,7 @@ struct MonitoringDashboardView: View {
                     Label("\(terminalMonitor.sessions.count) total", systemImage: "list.bullet.rectangle")
                     Label("\(liveSessionCount) live", systemImage: "waveform.path.ecg")
                     if store.settings.postgresMonitoring.enablePostgresWrites {
-                        Label("\(historicalSessionCount) from Postgres", systemImage: "externaldrive.badge.icloud")
+                        Label("\(historicalSessionCount) from MongoDB", systemImage: "externaldrive.badge.icloud")
                     }
                     Label("\(completedSessionCount) completed", systemImage: "checkmark.circle")
                     Label("\(failedSessionCount) failed", systemImage: "xmark.octagon")
@@ -205,7 +205,7 @@ struct MonitoringDashboardView: View {
                 .foregroundStyle(.secondary)
 
                 HStack {
-                    Button("Test Postgres Connection") {
+                    Button("Test MongoDB Connection") {
                         terminalMonitor.testConnection(settings: store.settings, logger: logger)
                     }
                     .disabled(!store.settings.postgresMonitoring.enabled)
@@ -250,10 +250,10 @@ struct MonitoringDashboardView: View {
                     if summary.hasAnyData {
                         VStack(alignment: .leading, spacing: 8) {
                             if let oldestSessionAt = summary.oldestSessionAt {
-                                detailLine(label: "Oldest PostgreSQL session", value: oldestSessionAt.formatted(date: .abbreviated, time: .standard))
+                                detailLine(label: "Oldest Mongo session", value: oldestSessionAt.formatted(date: .abbreviated, time: .standard))
                             }
                             if let newestSessionAt = summary.newestSessionAt {
-                                detailLine(label: "Newest PostgreSQL activity", value: newestSessionAt.formatted(date: .abbreviated, time: .standard))
+                                detailLine(label: "Newest MongoDB activity", value: newestSessionAt.formatted(date: .abbreviated, time: .standard))
                             }
                             if let oldestTranscriptAt = summary.oldestTranscriptFileAt {
                                 detailLine(label: "Oldest local transcript", value: oldestTranscriptAt.formatted(date: .abbreviated, time: .standard))
@@ -361,7 +361,7 @@ struct MonitoringDashboardView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("No monitored terminal sessions found.")
                             .font(.headline)
-                        Text("Launch a profile or workbench through the app after enabling monitoring. PostgreSQL-backed history appears here when database writes are enabled and recent rows are available.")
+                        Text("Launch a profile or workbench through the app after enabling monitoring. MongoDB-backed history appears here when database writes are enabled and recent rows are available.")
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 12)
@@ -383,7 +383,7 @@ struct MonitoringDashboardView: View {
                 Text(session.profileName)
                     .font(.headline)
                 if session.isHistorical {
-                    Text("Postgres")
+                        Text("MongoDB")
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
@@ -475,7 +475,7 @@ struct MonitoringDashboardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else if terminalMonitor.isLoadingDetails(for: session.id) {
-                Text("Loading transcript and PostgreSQL detail data…")
+                        Text("Loading MongoDB detail data…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -496,7 +496,7 @@ struct MonitoringDashboardView: View {
                     }
                 }
 
-                detailLine(label: "Source", value: session.isHistorical ? "Loaded from PostgreSQL history" : "Live local session")
+                detailLine(label: "Source", value: session.isHistorical ? "Loaded from MongoDB history" : "Live local session")
                 detailLine(label: "Agent", value: session.agentKind.displayName)
                 detailLine(label: "Working directory", value: session.workingDirectory)
                 detailLine(label: "Transcript path", value: session.transcriptPath)
@@ -630,7 +630,7 @@ struct MonitoringDashboardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let details = selectedDetails {
                     if details.events.isEmpty {
-                        Text("No PostgreSQL event rows were returned for this session yet.")
+                        Text("No MongoDB event rows were returned for this session yet.")
                             .foregroundStyle(.secondary)
                     } else {
                         if details.eventsTruncated {
@@ -692,7 +692,7 @@ struct MonitoringDashboardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let details = selectedDetails {
                     if details.chunks.isEmpty {
-                        Text("No PostgreSQL transcript chunks were loaded for this session.")
+                        Text("No MongoDB transcript chunks were loaded for this session.")
                             .foregroundStyle(.secondary)
                     } else {
                         if details.chunksTruncated {
@@ -749,7 +749,7 @@ struct MonitoringDashboardView: View {
                 .foregroundStyle(.secondary)
             Text("Select a monitored session")
                 .font(.title3.weight(.semibold))
-            Text("Choose a row on the left to inspect the session timeline, transcript content, and PostgreSQL chunk history.")
+                Text("Choose a row on the left to inspect the session timeline, transcript content, and MongoDB chunk history.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }

@@ -1563,9 +1563,9 @@ struct ContentView: View {
                 }
             }
 
-            Section("Terminal Monitoring / PostgreSQL") {
+            Section("Terminal Monitoring / MongoDB") {
                 Toggle("Enable terminal transcript monitoring", isOn: $store.settings.postgresMonitoring.enabled)
-                Toggle("Write captured transcript chunks into PostgreSQL", isOn: $store.settings.postgresMonitoring.enablePostgresWrites)
+                Toggle("Write captured transcript chunks into MongoDB", isOn: $store.settings.postgresMonitoring.enablePostgresWrites)
                     .disabled(!store.settings.postgresMonitoring.enabled)
 
                 Picker("Capture mode", selection: $store.settings.postgresMonitoring.captureMode) {
@@ -1575,12 +1575,16 @@ struct ContentView: View {
                 }
                 .disabled(!store.settings.postgresMonitoring.enabled)
 
-                TextField("Postgres connection URL", text: $store.settings.postgresMonitoring.connectionURL)
+                TextField("Mongo connection URL", text: $store.settings.postgresMonitoring.connectionURL)
                     .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
                 TextField("Schema name", text: $store.settings.postgresMonitoring.schemaName)
                     .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
-                TextField("psql executable", text: $store.settings.postgresMonitoring.psqlExecutable)
+                TextField("Mongo shell executable", text: $store.settings.postgresMonitoring.psqlExecutable)
                     .disabled(!store.settings.postgresMonitoring.enabled)
+                TextField("mongod executable", text: $store.settings.postgresMonitoring.mongodExecutable)
+                    .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
+                TextField("Local Mongo data directory", text: $store.settings.postgresMonitoring.localDataDirectory)
+                    .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
                 TextField("script executable", text: $store.settings.postgresMonitoring.scriptExecutable)
                     .disabled(!store.settings.postgresMonitoring.enabled)
                 TextField("Transcript directory", text: $store.settings.postgresMonitoring.transcriptDirectory)
@@ -1597,7 +1601,7 @@ struct ContentView: View {
                 .disabled(!store.settings.postgresMonitoring.enabled)
 
                 Stepper(value: $store.settings.postgresMonitoring.recentHistoryLimit, in: 10...200, step: 10) {
-                    Text("Recent PostgreSQL session load limit: \(store.settings.postgresMonitoring.clampedRecentHistoryLimit)")
+                    Text("Recent MongoDB session load limit: \(store.settings.postgresMonitoring.clampedRecentHistoryLimit)")
                 }
                 .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
 

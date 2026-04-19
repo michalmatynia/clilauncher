@@ -25,6 +25,8 @@ This project was previously published as *GeminiLauncherNative* and has kept sou
   - `claude`
   - `kiro` or `kiro-cli`
   - `ollama`
+  - `mongosh` (for monitoring writes)
+  - `mongod` (for local Mongo monitoring when using `mongodb://127.0.0.1:27017` or `localhost`)
 
 ## Quick start
 
@@ -67,6 +69,14 @@ swift build
   - `~/Library/Application Support/CLILauncherNativeV24/Logs/runtime.log`
 - Transcripts:
   - `~/Library/Application Support/CLILauncherNativeV24/Transcripts`
+- Monitoring Mongo data (optional fallback local database directory used by mongosh-based monitoring):
+  - `~/Library/Application Support/CLILauncherNativeV24/Mongo`
+
+When local monitoring is enabled (Mongo URL points at localhost), the app:
+
+- creates the folder if needed,
+- launches `mongod` against that folder with a generated log under the same path on first write,
+- retries the monitoring query once the daemon is available.
 
 The app tries to migrate older state from legacy folders:
 

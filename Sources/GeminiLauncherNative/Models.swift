@@ -45,6 +45,16 @@ enum AppPaths {
         logsDirectoryURL.appendingPathComponent("runtime.log")
     }
 
+    static var mongoDataDirectoryPath: String {
+        "~/Library/Application Support/\(folderName)/Mongo"
+    }
+
+    static var mongoDataDirectoryURL: URL {
+        applicationSupportDirectory
+            .appendingPathComponent(folderName, isDirectory: true)
+            .appendingPathComponent("Mongo", isDirectory: true)
+    }
+
     static var defaultTranscriptDirectoryPath: String {
         "~/Library/Application Support/\(folderName)/Transcripts"
     }
@@ -722,11 +732,12 @@ enum TerminalTranscriptCaptureMode: String, CaseIterable, Codable, Identifiable,
 struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
     var enabled: Bool = false
     var enablePostgresWrites: Bool = false
-    var connectionURL: String = "postgres://localhost:5432/gemini_launcher"
-    var schemaName: String = "launcher_monitor"
+    var connectionURL: String = "mongodb://127.0.0.1:27017"
+    var schemaName: String = "clilauncher_monitor"
     var transcriptDirectory: String = AppPaths.defaultTranscriptDirectoryPath
     var captureMode: TerminalTranscriptCaptureMode = .inputAndOutput
-    var psqlExecutable: String = "psql"
+    var psqlExecutable: String = "mongosh"
+    var mongodExecutable: String = "mongod"
     var scriptExecutable: String = "/usr/bin/script"
     var pollingIntervalMs: Int = 700
     var previewCharacterLimit: Int = 1200
@@ -738,17 +749,19 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
     var transcriptPreviewByteLimit: Int = 180_000
     var databaseRetentionDays: Int = 30
     var localTranscriptRetentionDays: Int = 30
+    var localDataDirectory: String = AppPaths.mongoDataDirectoryPath
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
         case enabled, enablePostgresWrites, connectionURL, schemaName, transcriptDirectory
-        case captureMode, psqlExecutable, scriptExecutable, pollingIntervalMs
+        case captureMode, psqlExecutable, mongodExecutable, scriptExecutable, pollingIntervalMs
         case previewCharacterLimit, keepLocalTranscriptFiles
         case recentHistoryLimit, recentHistoryLookbackDays
         case detailEventLimit, detailChunkLimit
         case transcriptPreviewByteLimit
         case databaseRetentionDays, localTranscriptRetentionDays
+        case localDataDirectory
     }
 
     init(from decoder: Decoder) throws {
@@ -762,6 +775,7 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
         transcriptDirectory = try container.decodeDefault(String.self, forKey: .transcriptDirectory, default: defaults.transcriptDirectory)
         captureMode = try container.decodeDefault(TerminalTranscriptCaptureMode.self, forKey: .captureMode, default: defaults.captureMode)
         psqlExecutable = try container.decodeDefault(String.self, forKey: .psqlExecutable, default: defaults.psqlExecutable)
+        mongodExecutable = try container.decodeDefault(String.self, forKey: .mongodExecutable, default: defaults.mongodExecutable)
         scriptExecutable = try container.decodeDefault(String.self, forKey: .scriptExecutable, default: defaults.scriptExecutable)
         pollingIntervalMs = try container.decodeDefault(Int.self, forKey: .pollingIntervalMs, default: defaults.pollingIntervalMs)
         previewCharacterLimit = try container.decodeDefault(Int.self, forKey: .previewCharacterLimit, default: defaults.previewCharacterLimit)
@@ -773,10 +787,20 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
         transcriptPreviewByteLimit = try container.decodeDefault(Int.self, forKey: .transcriptPreviewByteLimit, default: defaults.transcriptPreviewByteLimit)
         databaseRetentionDays = try container.decodeDefault(Int.self, forKey: .databaseRetentionDays, default: defaults.databaseRetentionDays)
         localTranscriptRetentionDays = try container.decodeDefault(Int.self, forKey: .localTranscriptRetentionDays, default: defaults.localTranscriptRetentionDays)
+        localDataDirectory = try container.decodeDefault(String.self, forKey: .localDataDirectory, default: defaults.localDataDirectory)
+    }
+
+    var expandedLocalDataDirectory: String {
+        NSString(string: localDataDirectory).expandingTildeInPath
     }
 
     var trimmedConnectionURL: String {
         connectionURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var trimmedDatabaseName: String {
+        let trimmed = schemaName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "clilauncher_monitor" : trimmed
     }
 
     var trimmedSchemaName: String {
