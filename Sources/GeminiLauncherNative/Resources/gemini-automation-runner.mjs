@@ -10,8 +10,13 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const RUNNER_LOG_FILE = (process.env.RUNNER_LOG_FILE || '').trim();
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+
 if (RUNNER_LOG_FILE) {
   try {
+    if (fs.existsSync(RUNNER_LOG_FILE) && fs.statSync(RUNNER_LOG_FILE).size > MAX_LOG_SIZE) {
+      fs.renameSync(RUNNER_LOG_FILE, `${RUNNER_LOG_FILE}.old`);
+    }
     const stamp = new Date().toISOString();
     const logStream = fs.createWriteStream(RUNNER_LOG_FILE, { flags: 'a' });
     logStream.write(`\n===== runner start ${stamp} pid=${process.pid} =====\n`);
@@ -64,8 +69,8 @@ const CAPACITY_RETRY_MS = toNumber(process.env.CAPACITY_RETRY_MS, 5000);
 const MAX_CAPACITY_RETRY_MS = toNumber(process.env.MAX_CAPACITY_RETRY_MS, 30000);
 const CAPACITY_EVENT_RESET_MS = toNumber(process.env.CAPACITY_EVENT_RESET_MS, 25000);
 const CAPACITY_RECENT_MS = toNumber(process.env.CAPACITY_RECENT_MS, 15000);
-const AUTO_CONTINUE_MAX_PER_EVENT = toNumber(process.env.AUTO_CONTINUE_MAX_PER_EVENT, 4);
-const AUTO_RESTART_MAX_PER_WINDOW = toNumber(process.env.AUTO_RESTART_MAX_PER_WINDOW, 3);
+const AUTO_CONTINUE_MAX_PER_EVENT = toNumber(process.env.AUTO_CONTINUE_MAX_PER_EVENT, YOLO ? 1000 : 4);
+const AUTO_RESTART_MAX_PER_WINDOW = toNumber(process.env.AUTO_RESTART_MAX_PER_WINDOW, YOLO ? 50 : 3);
 const AUTO_RESTART_WINDOW_MS = toNumber(process.env.AUTO_RESTART_WINDOW_MS, 120000);
 const RAW_TAIL_MAX = toNumber(process.env.RAW_TAIL_MAX, 48000);
 const NORMALIZED_TAIL_MAX = toNumber(process.env.NORMALIZED_TAIL_MAX, 16000);
@@ -94,6 +99,7 @@ const AUTO_ALLOW_SESSION_PERMISSIONS = isEnabled(process.env.AUTO_ALLOW_SESSION_
 const AUTO_DISABLE_ON_USAGE_LIMIT = isEnabled(process.env.AUTO_DISABLE_ON_USAGE_LIMIT, true);
 const AUTOMATION_DEFAULT_ENABLED = isEnabled(process.env.AUTOMATION_ENABLED, true);
 const NEVER_SWITCH = isEnabled(process.env.NEVER_SWITCH, false);
+const YOLO = isEnabled(process.env.GEMINI_YOLO, false);
 const DEBUG_AUTOMATION = isEnabled(process.env.DEBUG_AUTOMATION, false);
 const DEBUG_LAUNCH = isEnabled(process.env.DEBUG_LAUNCH, false);
 const QUIET_CHILD_NODE_WARNINGS = isEnabled(process.env.QUIET_CHILD_NODE_WARNINGS, true);
@@ -184,7 +190,19 @@ let screenModel = null;
 const recentActionKeys = new Map();
 const workspaceRequire = createRequire(path.join(process.cwd(), '__clilauncher_runner__.cjs'));
 
+let lastHeartbeat = Date.now();
+const HEARTBEAT_TIMEOUT_MS = 30000;
+
+function checkHeartbeat() {
+  if (activePty && Date.now() - lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
+    console.error('[runner] Heartbeat timeout: child process appears frozen. Restarting...');
+    cleanupAndExit(1);
+  }
+}
+setInterval(checkHeartbeat, 5000);
+
 async function main() {
+  lastHeartbeat = Date.now();
   validateConfig();
   fs.mkdirSync(ISO_HOME, { recursive: true });
   screenModel = new VirtualScreen(SCREEN_MAX_BUFFER_ROWS, SCREEN_MAX_COLS);
@@ -409,6 +427,10 @@ function buildGeminiArgs(model) {
 
   if (canResume) {
     args.push('--resume', 'latest');
+  }
+
+  if (YOLO) {
+    args.push('--yolo');
   }
 
   if (RAW_OUTPUT) {
@@ -636,6 +658,7 @@ function logLaunchBanner({ model, canResume, wrapperInfo, launchPlan }) {
 }
 
 function handleTerminalData(runId, chunk) {
+  lastHeartbeat = Date.now();
   screenModel?.feed(chunk);
 
   rawTail += chunk;
@@ -685,7 +708,7 @@ function detectBlockingBanners() {
       const tierSafe = MODELS.filter((m) => !/pro/i.test(m));
       const hint = tierSafe.length > 0
         ? 'Free-tier-compatible models in your chain: ' + tierSafe.join(', ') + '.'
-        : 'Your MODEL_CHAIN has no non-pro fallback — add gemini-2.5-flash.';
+        : 'Your MODEL_CHAIN has no non-pro fallback — add gemini-3-flash-preview.';
       const extra = NEVER_SWITCH ? ' (NEVER_SWITCH is set — not auto-switching.)' : '';
       console.error('[gemini-' + CLI_FLAVOR + '-pty] ⚠ Gemini CLI is showing the free-tier policy banner. Current model: ' + current + '. ' + hint + extra);
     }
@@ -876,8 +899,6 @@ function detectSnapshotFromText(text, source) {
     }
   }
 
-  if (!hasCapacity) return makeSnapshot('normal', source);
-
   const continuePrompt = detectContinuePrompt(recentTail);
   if (continuePrompt) {
     return {
@@ -890,6 +911,8 @@ function detectSnapshotFromText(text, source) {
       chatPromptActive,
     };
   }
+
+  if (!hasCapacity) return makeSnapshot('normal', source);
 
   return {
     kind: 'capacity_info',
@@ -1093,6 +1116,18 @@ function detectContinuePrompt(tail) {
       anchor: 'type continue',
       match:
         /(?:(?:type|enter|send|write)\s+["'`]?continue["'`]?\s+(?:to|for)\b[^\n]*|(?:to|for)\s+(?:keep\s+trying|continue\s+waiting|retry)[^\n]*\btype\s+["'`]?continue["'`]?)/i,
+    },
+    {
+      action: 'c',
+      reason: 'type c prompt',
+      anchor: "type 'c'",
+      match: /type\s+["'`]?c["'`]?\s+to\s+continue/i,
+    },
+    {
+      action: 'enter',
+      reason: 'press any key prompt',
+      anchor: 'press any key',
+      match: /press\s+any\s+key\s+to\s+continue/i,
     },
     {
       action: 'enter',
@@ -1441,6 +1476,7 @@ function maybeAutomate(runId, snapshot) {
     handleUsageLimitSnapshot,
     handleCapacityMenuSnapshot,
     handleCapacityContinueSnapshot,
+    handleYesNoSnapshot,
   ];
 
   for (const responder of responders) {
@@ -1453,6 +1489,19 @@ function maybeAutomate(runId, snapshot) {
   clearContinueTimer();
   clearMenuPlan();
   scheduleStaticRecheck();
+}
+
+function handleYesNoSnapshot(runId, snapshot) {
+  if (!YOLO || snapshot.kind !== 'normal') return false;
+  const tail = normalizedTail.slice(-120).toLowerCase();
+  if (tail.includes('[y/n]') || tail.includes('(y/n)')) {
+    if (tail.trim().endsWith('?') || tail.trim().endsWith(':') || tail.match(/[y\/n]\s*$/i)) {
+      console.error(`\n[${FLAVOR_LABEL}] YOLO: Auto-approving y/n prompt.\n`);
+      sendChoice('y', 'yolo-auto-approve', runId);
+      return true;
+    }
+  }
+  return false;
 }
 
 function handlePermissionSnapshot(runId, snapshot) {
@@ -2234,6 +2283,9 @@ function cleanupAndExit(code) {
   disposeActiveListeners();
 
   try {
+    if (activePty && typeof activePty.end === 'function') {
+      activePty.end();
+    }
     activePty?.kill?.();
     activeChild?.kill?.();
   } catch {

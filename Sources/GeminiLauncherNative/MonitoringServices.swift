@@ -49,9 +49,10 @@ private struct DatabaseSessionRow: Decodable {
     var last_database_message: String?
     var status_reason: String?
     var exit_code: Int?
+    var session_payload: String?
 
     func makeSession() -> TerminalMonitorSession {
-        TerminalMonitorSession(
+        let fallbackSession = TerminalMonitorSession(
             id: UUID(uuidString: session_id) ?? UUID(),
             profileID: profile_id.flatMap(UUID.init(uuidString:)),
             profileName: profile_name,
@@ -75,6 +76,49 @@ private struct DatabaseSessionRow: Decodable {
             exitCode: exit_code,
             isHistorical: true
         )
+
+        guard var payloadSession = payloadBackfilledSession() else {
+            return fallbackSession
+        }
+
+        payloadSession.id = UUID(uuidString: session_id) ?? payloadSession.id
+        payloadSession.profileID = profile_id.flatMap(UUID.init(uuidString:))
+            ?? payloadSession.profileID
+        payloadSession.profileName = profile_name
+        payloadSession.agentKind = AgentKind(rawValue: agent_kind) ?? payloadSession.agentKind
+        payloadSession.accountIdentifier = account_identifier
+        if let prompt {
+            payloadSession.prompt = prompt
+        }
+        payloadSession.workingDirectory = working_directory
+        payloadSession.transcriptPath = transcript_path
+        payloadSession.launchCommand = launch_command
+        payloadSession.captureMode = TerminalTranscriptCaptureMode(rawValue: capture_mode) ?? payloadSession.captureMode
+        payloadSession.status = TerminalMonitorStatus(rawValue: status) ?? payloadSession.status
+        payloadSession.startedAt = Date(timeIntervalSince1970: started_at_epoch)
+        payloadSession.lastActivityAt = last_activity_at_epoch.map(Date.init(timeIntervalSince1970:))
+        payloadSession.endedAt = ended_at_epoch.map(Date.init(timeIntervalSince1970:))
+        payloadSession.chunkCount = chunk_count
+        payloadSession.byteCount = byte_count
+        payloadSession.lastPreview = last_preview ?? payloadSession.lastPreview
+        payloadSession.lastDatabaseMessage = last_database_message ?? payloadSession.lastDatabaseMessage
+        payloadSession.lastError = last_error
+        payloadSession.statusReason = status_reason
+        payloadSession.exitCode = exit_code
+        payloadSession.isHistorical = true
+        return payloadSession
+    }
+
+    private func payloadBackfilledSession() -> TerminalMonitorSession? {
+        guard let rawPayload = session_payload?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawPayload.isEmpty,
+              let payloadData = rawPayload.data(using: .utf8) else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try? decoder.decode(TerminalMonitorSession.self, from: payloadData)
     }
 }
 
@@ -302,6 +346,55 @@ actor MongoMonitoringWriter {
     private let commandBuilder = CommandBuilder()
     private var initializedFingerprint: String?
 
+    private func sessionDocument(from session: TerminalMonitorSession) -> [String: Any] {
+        let lastActivityMillis = session.lastActivityAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let endedAtMillis = session.endedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+
+        let sessionPayload: String
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .secondsSince1970
+            let data = try encoder.encode(session)
+            sessionPayload = String(data: data, encoding: .utf8) ?? "{}"
+        } catch {
+            sessionPayload = "{}"
+        }
+
+        let metadata: [String: String] = [
+            "capture_mode": session.captureMode.rawValue,
+            "working_directory": session.workingDirectory,
+            "transcript_path": session.transcriptPath
+        ]
+        let metadataJSON = (try? JSONSerialization.data(withJSONObject: metadata))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+
+        return [
+            "session_id": session.id.uuidString,
+            "profile_id": session.profileID?.uuidString ?? NSNull(),
+            "profile_name": session.profileName,
+            "agent_kind": session.agentKind.rawValue,
+            "account_identifier": session.accountIdentifier ?? NSNull(),
+            "prompt": session.prompt,
+            "working_directory": session.workingDirectory,
+            "transcript_path": session.transcriptPath,
+            "launch_command": session.launchCommand,
+            "capture_mode": session.captureMode.rawValue,
+            "status": session.status.rawValue,
+            "started_at": Int64(session.startedAt.timeIntervalSince1970 * 1000),
+            "last_activity_at": nullableMongoValue(lastActivityMillis),
+            "ended_at": nullableMongoValue(endedAtMillis),
+            "chunk_count": session.chunkCount,
+            "byte_count": session.byteCount,
+            "last_error": session.lastError ?? NSNull(),
+            "last_preview": session.lastPreview,
+            "last_database_message": session.lastDatabaseMessage,
+            "status_reason": session.statusReason ?? NSNull(),
+            "exit_code": session.exitCode ?? NSNull(),
+            "metadata_json": metadataJSON,
+            "session_payload": sessionPayload
+        ]
+    }
+
     func testConnection(settings: MongoMonitoringSettings) throws -> String {
         guard settings.enableMongoWrites else {
             return "Mongo writes are disabled."
@@ -344,33 +437,7 @@ actor MongoMonitoringWriter {
         guard settings.enableMongoWrites else { return }
         try ensureSchema(settings: settings)
 
-        let metadata: [String: Any] = [
-            "capture_mode": session.captureMode.rawValue,
-            "working_directory": session.workingDirectory,
-            "transcript_path": session.transcriptPath
-        ]
-        let payload: [String: Any] = [
-            "session_id": session.id.uuidString,
-            "profile_id": session.profileID?.uuidString ?? NSNull(),
-            "profile_name": session.profileName,
-            "agent_kind": session.agentKind.rawValue,
-            "working_directory": session.workingDirectory,
-            "transcript_path": session.transcriptPath,
-            "launch_command": session.launchCommand,
-            "capture_mode": session.captureMode.rawValue,
-            "status": session.status.rawValue,
-            "started_at": Int64(session.startedAt.timeIntervalSince1970 * 1000),
-            "last_activity_at": NSNull(),
-            "ended_at": NSNull(),
-            "chunk_count": 0,
-            "byte_count": 0,
-            "last_error": NSNull(),
-            "last_preview": session.lastPreview,
-            "last_database_message": session.lastDatabaseMessage,
-            "status_reason": session.statusReason ?? NSNull(),
-            "exit_code": session.exitCode ?? NSNull(),
-            "metadata_json": metadata
-        ]
+        let payload = sessionDocument(from: session)
 
         let script = """
         (function() {
@@ -384,12 +451,17 @@ actor MongoMonitoringWriter {
                         profile_id: payload.profile_id,
                         profile_name: payload.profile_name,
                         agent_kind: payload.agent_kind,
+                        account_identifier: payload.account_identifier,
+                        prompt: payload.prompt,
                         working_directory: payload.working_directory,
                         transcript_path: payload.transcript_path,
                         launch_command: payload.launch_command,
                         capture_mode: payload.capture_mode,
+                        session_payload: payload.session_payload,
                         status: payload.status,
                         started_at: new Date(payload.started_at),
+                        last_activity_at: payload.last_activity_at,
+                        ended_at: payload.ended_at,
                         chunk_count: payload.chunk_count,
                         byte_count: payload.byte_count,
                         last_error: payload.last_error,
@@ -397,8 +469,7 @@ actor MongoMonitoringWriter {
                         last_database_message: payload.last_database_message,
                         status_reason: payload.status_reason,
                         exit_code: payload.exit_code,
-                        metadata_json: payload.metadata_json ? EJSON.stringify(payload.metadata_json) : null,
-                        last_activity_at: payload.last_activity_at
+                        metadata_json: payload.metadata_json
                     },
                     $setOnInsert: {
                         session_id: payload.session_id,
@@ -415,7 +486,7 @@ actor MongoMonitoringWriter {
                 status: payload.status,
                 event_at: new Date(payload.started_at),
                 message: "Session registered for monitoring.",
-                metadata_json: payload.metadata_json ? EJSON.stringify(payload.metadata_json) : null
+                metadata_json: payload.metadata_json
             });
             print("ok");
         })();
@@ -427,6 +498,8 @@ actor MongoMonitoringWriter {
         sessionID: UUID,
         chunkIndex: Int,
         data: Data,
+        session: TerminalMonitorSession,
+        prompt: String,
         preview: String,
         totalChunks: Int,
         totalBytes: Int,
@@ -437,10 +510,12 @@ actor MongoMonitoringWriter {
         guard settings.enableMongoWrites else { return }
         try ensureSchema(settings: settings)
 
+        let sessionPayload = sessionDocument(from: session)
         let payload: [String: Any] = [
             "session_id": sessionID.uuidString,
             "chunk_index": chunkIndex,
             "source": "terminal_transcript",
+            "prompt": prompt,
             "captured_at": Int64(capturedAt.timeIntervalSince1970 * 1000),
             "byte_count": data.count,
             "preview_text": preview,
@@ -448,7 +523,8 @@ actor MongoMonitoringWriter {
             "status": status.rawValue,
             "message": "Synced chunk \(totalChunks) to MongoDB.",
             "total_chunks": totalChunks,
-            "total_bytes": totalBytes
+            "total_bytes": totalBytes,
+            "session": sessionPayload
         ]
 
         let script = """
@@ -462,6 +538,7 @@ actor MongoMonitoringWriter {
                 {
                     $set: {
                         source: payload.source,
+                        prompt: payload.prompt,
                         captured_at: new Date(payload.captured_at),
                         byte_count: payload.byte_count,
                         preview_text: payload.preview_text,
@@ -475,14 +552,27 @@ actor MongoMonitoringWriter {
                 { session_id: payload.session_id },
                 {
                     $set: {
+                        profile_id: payload.session.profile_id,
+                        profile_name: payload.session.profile_name,
+                        agent_kind: payload.session.agent_kind,
+                        account_identifier: payload.session.account_identifier,
+                        prompt: payload.session.prompt,
+                        working_directory: payload.session.working_directory,
+                        transcript_path: payload.session.transcript_path,
+                        launch_command: payload.session.launch_command,
+                        capture_mode: payload.session.capture_mode,
+                        session_payload: payload.session.session_payload,
                         last_activity_at: new Date(payload.captured_at),
                         chunk_count: payload.total_chunks,
                         byte_count: payload.total_bytes,
-                        status: payload.status,
+                        status: payload.session.status,
                         last_preview: payload.preview_text,
                         last_database_message: payload.message,
-                        status_reason: null,
-                        last_error: null
+                        status_reason: payload.session.status_reason,
+                        last_error: payload.session.last_error,
+                        exit_code: payload.session.exit_code,
+                        ended_at: payload.session.ended_at,
+                        metadata_json: payload.session.metadata_json
                     }
                 }
             );
@@ -493,7 +583,7 @@ actor MongoMonitoringWriter {
     }
 
     func recordStatus(
-        sessionID: UUID,
+        session: TerminalMonitorSession,
         status: TerminalMonitorStatus,
         eventType: String,
         message: String?,
@@ -507,19 +597,33 @@ actor MongoMonitoringWriter {
         try ensureSchema(settings: settings)
 
         let statusMessage = message ?? defaultMessage(for: status)
-        let endedAtMillis = endedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        var resolvedSession = session
+        resolvedSession.status = status
+        resolvedSession.endedAt = endedAt ?? session.endedAt
+        resolvedSession.statusReason = statusReason ?? session.statusReason
+        resolvedSession.exitCode = exitCode ?? session.exitCode
+        if status == .failed && resolvedSession.lastError == nil {
+            resolvedSession.lastError = statusMessage
+        }
+        if status == .completed || status == .failed || status == .stopped {
+            resolvedSession.lastActivityAt = eventAt
+        }
+
+        let resolvedSessionPayload = sessionDocument(from: resolvedSession)
+        let endedAtMillis = resolvedSession.endedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
         let payload: [String: Any] = [
-            "session_id": sessionID.uuidString,
-            "status": status.rawValue,
+            "session_id": session.id.uuidString,
+            "status": resolvedSession.status.rawValue,
             "event_type": eventType,
             "event_at": Int64(eventAt.timeIntervalSince1970 * 1000),
             "message": statusMessage,
-            "status_reason": nullableMongoValue(statusReason),
-            "exit_code": nullableMongoValue(exitCode),
+            "status_reason": nullableMongoValue(resolvedSession.statusReason),
+            "exit_code": nullableMongoValue(resolvedSession.exitCode),
             "ended_at": nullableMongoValue(endedAtMillis),
+            "session": resolvedSessionPayload,
             "metadata": [
-                "status_reason": nullableMongoValue(statusReason),
-                "exit_code": nullableMongoValue(exitCode),
+                "status_reason": nullableMongoValue(resolvedSession.statusReason),
+                "exit_code": nullableMongoValue(resolvedSession.exitCode),
                 "ended_at": nullableMongoValue(endedAtMillis),
                 "message": statusMessage
             ]
@@ -535,13 +639,28 @@ actor MongoMonitoringWriter {
                 { session_id: payload.session_id },
                 {
                     $set: {
-                        status: payload.status,
+                        profile_id: payload.session.profile_id,
+                        profile_name: payload.session.profile_name,
+                        agent_kind: payload.session.agent_kind,
+                        account_identifier: payload.session.account_identifier,
+                        prompt: payload.session.prompt,
+                        working_directory: payload.session.working_directory,
+                        transcript_path: payload.session.transcript_path,
+                        launch_command: payload.session.launch_command,
+                        capture_mode: payload.session.capture_mode,
+                        started_at: new Date(payload.session.started_at),
                         last_activity_at: new Date(payload.event_at),
                         ended_at: payload.ended_at != null ? new Date(payload.ended_at) : null,
+                        chunk_count: payload.session.chunk_count,
+                        byte_count: payload.session.byte_count,
                         last_database_message: payload.message,
                         status_reason: payload.status_reason,
-                        last_error: payload.status === "failed" ? payload.message : null,
-                        exit_code: payload.exit_code
+                        last_error: payload.session.last_error,
+                        exit_code: payload.exit_code,
+                        status: payload.status,
+                        last_preview: payload.session.last_preview,
+                        metadata_json: payload.session.metadata_json,
+                        session_payload: payload.session.session_payload
                     }
                 }
             );
@@ -560,9 +679,9 @@ actor MongoMonitoringWriter {
         _ = try runMongo(script, settings: settings)
     }
 
-    func recordFailure(sessionID: UUID, message: String, status: TerminalMonitorStatus, settings: MongoMonitoringSettings) throws {
+    func recordFailure(session: TerminalMonitorSession, message: String, status: TerminalMonitorStatus, settings: MongoMonitoringSettings) throws {
         try recordStatus(
-            sessionID: sessionID,
+            session: session,
             status: status,
             eventType: "session_failed",
             message: message,
@@ -576,7 +695,7 @@ actor MongoMonitoringWriter {
 
     func recordCompletion(session: TerminalMonitorSession, settings: MongoMonitoringSettings) throws {
         try recordStatus(
-            sessionID: session.id,
+            session: session,
             status: session.status,
             eventType: session.status == .completed ? "session_completed" : "session_exited_nonzero",
             message: session.lastDatabaseMessage,
@@ -618,6 +737,8 @@ actor MongoMonitoringWriter {
                     profile_id: row.profile_id ?? null,
                     profile_name: row.profile_name,
                     agent_kind: row.agent_kind,
+                    account_identifier: row.account_identifier ?? null,
+                    prompt: row.prompt ?? null,
                     working_directory: row.working_directory,
                     transcript_path: row.transcript_path,
                     launch_command: row.launch_command,
@@ -632,7 +753,8 @@ actor MongoMonitoringWriter {
                     last_preview: row.last_preview ?? "",
                     last_database_message: row.last_database_message ?? "",
                     status_reason: row.status_reason ?? null,
-                    exit_code: row.exit_code ?? null
+                    exit_code: row.exit_code ?? null,
+                    session_payload: row.session_payload ?? null
                 }));
             });
         })();
@@ -995,6 +1117,8 @@ actor MongoMonitoringWriter {
             }
 
             targetDb.terminal_sessions.createIndex({ session_id: 1 }, { unique: true });
+            targetDb.terminal_sessions.createIndex({ account_identifier: 1 });
+            targetDb.terminal_sessions.createIndex({ prompt: "text" });
             targetDb.terminal_chunks.createIndex({ session_id: 1, chunk_index: 1 }, { unique: true });
             targetDb.terminal_session_events.createIndex({ session_id: 1, event_at: -1, _id: -1 });
             targetDb.terminal_sessions.createIndex({ status: 1, ended_at: -1, last_activity_at: -1, started_at: -1 });
@@ -1234,7 +1358,7 @@ final class TerminalMonitorStore: ObservableObject {
             if settings.mongoMonitoring.enableMongoWrites {
                 Task {
                     try? await writer.recordStatus(
-                        sessionID: sessionID,
+                        session: cancelled,
                         status: .failed,
                         eventType: "session_launch_cancelled",
                         message: reason,
@@ -1661,6 +1785,8 @@ final class TerminalMonitorStore: ObservableObject {
             profileID: item.profileID,
             profileName: item.profileName,
             agentKind: profile.agentKind,
+            accountIdentifier: Self.currentAccountIdentifier(),
+            prompt: Self.initialPromptHint(for: profile, command: item.command),
             workingDirectory: profile.expandedWorkingDirectory,
             transcriptPath: transcriptPath,
             launchCommand: item.command,
@@ -1676,7 +1802,8 @@ final class TerminalMonitorStore: ObservableObject {
             lastError: nil,
             statusReason: nil,
             exitCode: nil,
-            isHistorical: false
+            isHistorical: false,
+            isYolo: profile.agentKind == .gemini && profile.geminiYolo
         )
         return PreparedMonitoringContext(session: session, wrappedCommand: wrappedCommand, completionMarkerPath: completionMarkerPath)
     }
@@ -1808,6 +1935,7 @@ final class TerminalMonitorStore: ObservableObject {
         session.chunkCount += 1
         session.byteCount += data.count
         session.lastPreview = preview
+        session.prompt = Self.appendPrompt(session.prompt, from: String(decoding: data, as: UTF8.self))
         session.lastDatabaseMessage = settings.enableMongoWrites ? "Chunk \(session.chunkCount) queued for MongoDB." : "Chunk \(session.chunkCount) captured locally."
         session.lastError = nil
         session.statusReason = nil
@@ -1816,14 +1944,16 @@ final class TerminalMonitorStore: ObservableObject {
         guard settings.enableMongoWrites else { return }
 
         do {
-            try await writer.recordChunk(
-                sessionID: sessionID,
-                chunkIndex: chunkIndex,
-                data: data,
-                preview: preview,
-                totalChunks: session.chunkCount,
-                totalBytes: session.byteCount,
-                capturedAt: timestamp,
+                try await writer.recordChunk(
+                    sessionID: sessionID,
+                    chunkIndex: chunkIndex,
+                    data: data,
+                    session: session,
+                    prompt: session.prompt,
+                    preview: preview,
+                    totalChunks: session.chunkCount,
+                    totalBytes: session.byteCount,
+                    capturedAt: timestamp,
                 status: .monitoring,
                 settings: settings
             )
@@ -1850,13 +1980,13 @@ final class TerminalMonitorStore: ObservableObject {
 
         guard settings.enableMongoWrites else { return }
         do {
-            try await writer.recordStatus(
-                sessionID: sessionID,
-                status: .idle,
-                eventType: "session_idle",
-                message: idleSession.lastDatabaseMessage,
-                eventAt: timestamp,
-                endedAt: nil,
+                try await writer.recordStatus(
+                    session: idleSession,
+                    status: .idle,
+                    eventType: "session_idle",
+                    message: idleSession.lastDatabaseMessage,
+                    eventAt: timestamp,
+                    endedAt: nil,
                 statusReason: "no_output_detected",
                 exitCode: idleSession.exitCode,
                 settings: settings
@@ -1937,7 +2067,7 @@ final class TerminalMonitorStore: ObservableObject {
 
         guard settings.enableMongoWrites else { return }
         do {
-            try await writer.recordFailure(sessionID: sessionID, message: message, status: .failed, settings: settings)
+            try await writer.recordFailure(session: failedSession, message: message, status: .failed, settings: settings)
         } catch {
             if let refreshedIndex = sessionIndex(for: sessionID) {
                 sessions[refreshedIndex].lastDatabaseMessage = "MongoDB failure sync failed: \(error.localizedDescription)"
@@ -2237,6 +2367,73 @@ final class TerminalMonitorStore: ObservableObject {
             return String(cleaned[..<end]) + "…"
         }
         return cleaned
+    }
+
+    nonisolated private static let maxPromptCharsStored = 12_000
+    nonisolated private static let maxPromptChunkChars = 1_600
+
+    nonisolated private static func appendPrompt(_ existing: String, from rawChunk: String) -> String {
+        let chunk = normalizePromptChunk(rawChunk)
+        guard !chunk.isEmpty else { return existing }
+        if existing.isEmpty {
+            return chunk
+        }
+        let merged = existing + "\n" + chunk
+        if merged.count <= maxPromptCharsStored {
+            return merged
+        }
+        let startIndex = merged.index(merged.endIndex, offsetBy: merged.count - maxPromptCharsStored)
+        return String(merged[startIndex...])
+    }
+
+    nonisolated private static func normalizePromptChunk(_ rawChunk: String) -> String {
+        if rawChunk.isEmpty {
+            return ""
+        }
+
+        let ansiPattern = #"\x1B\[[0-9;]*[A-Za-z]"#
+        var sanitized = rawChunk.replacingOccurrences(of: ansiPattern, with: "", options: .regularExpression)
+        sanitized = sanitized.replacingOccurrences(of: "\u{0000}", with: "")
+        sanitized = sanitized.replacingOccurrences(of: "\r", with: "\n")
+        sanitized = sanitized.unicodeScalars
+            .filter { $0.value == 0x09 || $0.value == 0x0A || $0.value >= 0x20 }
+            .reduce(into: String()) { result, scalar in result.unicodeScalars.append(scalar) }
+        sanitized = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.count <= maxPromptChunkChars {
+            return sanitized
+        }
+        let endIndex = sanitized.index(sanitized.startIndex, offsetBy: Self.maxPromptChunkChars)
+        return String(sanitized[..<endIndex]) + "…"
+    }
+
+    nonisolated private static func initialPromptHint(for profile: LaunchProfile, command: String) -> String {
+        let commandHint = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if profile.agentKind == .copilot {
+            return commandHint
+        }
+        if commandHint.isEmpty {
+            return ""
+        }
+        if commandHint.count > 1_200 {
+            let endIndex = commandHint.index(commandHint.startIndex, offsetBy: 1_200)
+            return String(commandHint[..<endIndex])
+        }
+        return commandHint
+    }
+
+    nonisolated private static func currentAccountIdentifier() -> String {
+        let environment = ProcessInfo.processInfo.environment
+        let candidates = [
+            environment["USER"],
+            environment["LOGNAME"],
+            environment["SUDO_USER"],
+            environment["C9_USER"],
+            environment["USERNAME"]
+        ]
+        for candidate in candidates where !(candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return candidate!.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return NSUserName()
     }
 
     nonisolated private static func readCompletionMarker(at path: String) -> SessionCompletionMarker? {

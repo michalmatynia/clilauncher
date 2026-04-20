@@ -436,13 +436,15 @@ struct ContentView: View {
             useDefaultWorkingDirectory: {
                 profile.wrappedValue.workingDirectory = store.settings.defaultWorkingDirectory
             },
-            revealWorkingDirectory: {
-                store.reveal(profile.wrappedValue.expandedWorkingDirectory)
-            },
-            manageSharedPresets: {
-                selectedTab = .settings
-            },
-            onAgentKindChanged: { newValue in
+                                revealWorkingDirectory: {
+                                    store.reveal(profile.wrappedValue.expandedWorkingDirectory)
+                                },
+                                revealISO: {
+                                    store.reveal(profile.wrappedValue.expandedGeminiISOHome)
+                                },
+                                manageSharedPresets: {
+                                    selectedTab = .settings
+                                },            onAgentKindChanged: { newValue in
                 store.updateSelected { updated in
                     updated.agentKind = newValue
                     updated.applyKindDefaults(settings: store.settings)
@@ -1386,6 +1388,7 @@ private struct ProfileEditorPane: View {
     let chooseWorkingDirectory: () -> Void
     let useDefaultWorkingDirectory: () -> Void
     let revealWorkingDirectory: () -> Void
+    let revealISO: () -> Void
     let manageSharedPresets: () -> Void
     let onAgentKindChanged: (AgentKind) -> Void
     let onGeminiFlavorChanged: () -> Void
@@ -1417,7 +1420,8 @@ private struct ProfileEditorPane: View {
                 )
                 ProfileProviderSection(
                     profile: $profile,
-                    onGeminiFlavorChanged: onGeminiFlavorChanged
+                    onGeminiFlavorChanged: onGeminiFlavorChanged,
+                    revealISO: revealISO
                 )
                 ProfileCompanionSection(
                     profile: $profile,
@@ -1602,6 +1606,7 @@ private struct ProfileGeneralSection: View {
 private struct ProfileProviderSection: View {
     @Binding var profile: LaunchProfile
     let onGeminiFlavorChanged: () -> Void
+    let revealISO: () -> Void
 
     @ViewBuilder
     var body: some View {
@@ -1609,7 +1614,8 @@ private struct ProfileProviderSection: View {
         case .gemini:
             ProfileGeminiProviderSection(
                 profile: $profile,
-                onGeminiFlavorChanged: onGeminiFlavorChanged
+                onGeminiFlavorChanged: onGeminiFlavorChanged,
+                revealISO: revealISO
             )
         case .copilot:
             ProfileCopilotProviderSection(profile: $profile)
@@ -1630,6 +1636,7 @@ private struct ProfileProviderSection: View {
 private struct ProfileGeminiProviderSection: View {
     @Binding var profile: LaunchProfile
     let onGeminiFlavorChanged: () -> Void
+    let revealISO: () -> Void
 
     var body: some View {
         GroupBox(profile.agentKind.displayName) {
@@ -1657,7 +1664,10 @@ private struct ProfileGeminiProviderSection: View {
                 .foregroundStyle(.secondary)
 
                 TextField("Wrapper command", text: $profile.geminiWrapperCommand)
-                TextField("ISO home", text: $profile.geminiISOHome)
+                HStack {
+                    TextField("ISO home", text: $profile.geminiISOHome)
+                    Button("Reveal", action: revealISO)
+                }
                 HStack {
                     TextField("Initial model", text: $profile.geminiInitialModel)
                     Button("Reset") {
@@ -1681,11 +1691,16 @@ private struct ProfileGeminiProviderSection: View {
                 TextField("Hotkey prefix", text: $profile.geminiHotkeyPrefix)
 
                 HStack {
-                    Stepper(value: $profile.geminiKeepTryMax, in: 0...100) {
+                    Stepper(value: $profile.geminiKeepTryMax, in: 0...1000) {
                         Text("Keep-try max: \(profile.geminiKeepTryMax)")
                     }
                     Stepper(value: $profile.geminiManualOverrideMs, in: 1000...120000, step: 1000) {
                         Text("Manual override: \(profile.geminiManualOverrideMs) ms")
+                    }
+                }
+                HStack {
+                    Stepper(value: $profile.geminiCapacityRetryMs, in: 250...30000, step: 250) {
+                        Text("Capacity retry: \(profile.geminiCapacityRetryMs) ms")
                     }
                 }
 
@@ -1697,8 +1712,22 @@ private struct ProfileGeminiProviderSection: View {
 
                 Toggle("Resume latest", isOn: $profile.geminiResumeLatest)
                 Toggle("Automation enabled", isOn: $profile.geminiAutomationEnabled)
+                Toggle("YOLO Mode (Always Auto-Continue)", isOn: $profile.geminiYolo)
+                    .onChange(of: profile.geminiYolo) { newValue in
+                        if newValue {
+                            profile.geminiAutoContinueMode = .yolo
+                            profile.geminiKeepTryMax = 1000
+                            profile.geminiCapacityRetryMs = 500
+                            profile.geminiAutoAllowSessionPermissions = true
+                        } else {
+                            profile.geminiAutoContinueMode = .promptOnly
+                            profile.geminiKeepTryMax = 25
+                            profile.geminiCapacityRetryMs = 5000
+                        }
+                    }
                 Toggle("Auto allow session permissions", isOn: $profile.geminiAutoAllowSessionPermissions)
                 Toggle("Never switch model", isOn: $profile.geminiNeverSwitch)
+                Toggle("Set HOME to ISO folder", isOn: $profile.geminiSetHomeToIso)
                 Toggle("Quiet child node warnings", isOn: $profile.geminiQuietChildNodeWarnings)
                 Toggle("Raw output", isOn: $profile.geminiRawOutput)
             }

@@ -106,13 +106,22 @@ struct CommandBuilder {
             env["GEMINI_ISO_HOME"] = profile.expandedGeminiISOHome
             env["RESUME_LATEST"] = profile.geminiResumeLatest ? "1" : "0"
             env["KEEP_TRY_MAX"] = String(profile.geminiKeepTryMax)
-            env["AUTO_CONTINUE_MODE"] = profile.geminiAutoContinueMode.rawValue
+            if profile.geminiAutoContinueMode == .yolo {
+                env["AUTO_CONTINUE_MODE"] = "always"
+                env["AUTO_CONTINUE_MAX_PER_EVENT"] = "1000"
+                env["KEEP_TRY_MAX"] = "1000"
+            } else {
+                env["AUTO_CONTINUE_MODE"] = profile.geminiAutoContinueMode.rawValue
+            }
             env["AUTO_ALLOW_SESSION_PERMISSIONS"] = profile.geminiAutoAllowSessionPermissions ? "1" : "0"
             env["AUTOMATION_ENABLED"] = profile.geminiAutomationEnabled ? "1" : "0"
             env["NEVER_SWITCH"] = profile.geminiNeverSwitch ? "1" : "0"
+            env["GEMINI_YOLO"] = profile.geminiYolo ? "1" : "0"
+            env["PTY_SET_HOME_TO_ISO"] = profile.geminiSetHomeToIso ? "1" : "0"
             env["QUIET_CHILD_NODE_WARNINGS"] = profile.geminiQuietChildNodeWarnings ? "1" : "0"
             env["RAW_OUTPUT"] = profile.geminiRawOutput ? "1" : "0"
             env["MANUAL_OVERRIDE_MS"] = String(profile.geminiManualOverrideMs)
+            env["CAPACITY_RETRY_MS"] = String(profile.geminiCapacityRetryMs)
             env["HOTKEY_PREFIX"] = profile.geminiHotkeyPrefix
             env["MODEL_CHAIN"] = profile.geminiModelChain
             if env["RUNNER_LOG_FILE"] == nil || env["RUNNER_LOG_FILE"]?.isEmpty == true {
@@ -202,6 +211,9 @@ struct CommandBuilder {
         if profile.geminiResumeLatest {
             args.append("--resume")
             args.append("latest")
+        }
+        if profile.geminiYolo {
+            args.append("--yolo")
         }
         if profile.geminiRawOutput {
             args.append("--raw-output")
@@ -1899,7 +1911,7 @@ struct ITerm2Launcher {
         LaunchScriptMaterializer.materialize(command: command)
     }
 
-    private func commandPreview(_ command: String, limit: Int = 220) -> String {
+    private func commandPreview(_ command: String, limit: Int = 500) -> String {
         let compact = command
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\t", with: " ")

@@ -139,6 +139,8 @@ struct MonitoringDashboardView: View {
             session.transcriptPath.localizedCaseInsensitiveContains(query) ||
             session.lastPreview.localizedCaseInsensitiveContains(query) ||
             session.lastDatabaseMessage.localizedCaseInsensitiveContains(query) ||
+            (session.accountIdentifier?.localizedCaseInsensitiveContains(query) ?? false) ||
+            session.prompt.localizedCaseInsensitiveContains(query) ||
             (session.statusReason?.localizedCaseInsensitiveContains(query) ?? false) ||
             (session.lastError?.localizedCaseInsensitiveContains(query) ?? false) ||
             session.agentKind.displayName.localizedCaseInsensitiveContains(query) ||
@@ -429,6 +431,16 @@ struct MonitoringDashboardView: View {
                         .foregroundStyle(.blue)
                         .cornerRadius(4)
                 }
+
+                if session.isYolo {
+                    Text("YOLO")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.red.opacity(0.15))
+                        .foregroundStyle(.red)
+                        .cornerRadius(4)
+                }
             }
 
             Text("\(session.agentKind.displayName) • \(session.workingDirectory)")
@@ -436,6 +448,20 @@ struct MonitoringDashboardView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+
+            if let accountIdentifier = session.accountIdentifier, !accountIdentifier.isEmpty {
+                Text("Account: \(accountIdentifier)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !session.prompt.isEmpty {
+                Text(session.prompt.count > 140 ? String(session.prompt.prefix(140)) + "…" : session.prompt)
+                    .font(.system(.caption2, design: .monospaced))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .truncationMode(.middle)
+            }
 
             if !session.lastPreview.isEmpty {
                 Text(session.lastPreview)
@@ -488,8 +514,20 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(session.profileName)
-                        .font(.title2.bold())
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(session.profileName)
+                            .font(.title2.bold())
+                        
+                        if session.isYolo {
+                            Text("YOLO")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.red.opacity(0.15))
+                                .foregroundStyle(.red)
+                                .cornerRadius(4)
+                        }
+                    }
                     Text(session.id.uuidString)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -536,6 +574,9 @@ struct MonitoringDashboardView: View {
 
                 detailLine(label: "Source", value: session.isHistorical ? "Loaded from MongoDB history" : "Live local session")
                 detailLine(label: "Agent", value: session.agentKind.displayName)
+                if let accountIdentifier = session.accountIdentifier, !accountIdentifier.isEmpty {
+                    detailLine(label: "Account", value: accountIdentifier)
+                }
                 detailLine(label: "Working directory", value: session.workingDirectory)
                 detailLine(label: "Transcript path", value: session.transcriptPath)
                 detailLine(label: "Started", value: session.startedAt.formatted(date: .abbreviated, time: .standard))
@@ -574,6 +615,21 @@ struct MonitoringDashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.secondary.opacity(0.08))
                         .cornerRadius(8)
+                }
+
+                if !session.prompt.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Captured prompt")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(session.prompt)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.08))
+                            .cornerRadius(8)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

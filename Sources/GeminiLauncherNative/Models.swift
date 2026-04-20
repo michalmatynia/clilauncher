@@ -11,6 +11,9 @@ enum AppPaths {
     static let folderName = "CLILauncherNativeV24"
     static let legacyFolderNames = [
         "GeminiLauncherNativeV24",
+        "GeminiLauncherNativeV23",
+        "GeminiLauncherNativeV22",
+        "GeminiLauncherNativeV21",
         "GeminiLauncherNativeV20",
         "GeminiLauncherNativeV19",
         "GeminiLauncherNativeV18",
@@ -487,7 +490,7 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
     var defaultInitialModel: String {
         switch self {
         case .stable: return "gemini-2.5-flash"
-        case .preview, .nightly: return "gemini-2.5-flash"
+        case .preview, .nightly: return "gemini-3-pro-preview"
         }
     }
 
@@ -496,7 +499,7 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
         case .stable:
             return ["gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
         case .preview, .nightly:
-            return ["gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
+            return ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
         }
     }
 }
@@ -547,6 +550,7 @@ enum AutoContinueMode: String, CaseIterable, Codable, Identifiable {
     case off
     case promptOnly = "prompt_only"
     case capacity
+    case yolo
 
     var id: String { rawValue }
 
@@ -555,6 +559,7 @@ enum AutoContinueMode: String, CaseIterable, Codable, Identifiable {
         case .off: return "Off"
         case .promptOnly: return "Prompt only"
         case .capacity: return "Capacity"
+        case .yolo: return "YOLO (Always)"
         }
     }
 }
@@ -981,6 +986,7 @@ struct TerminalMonitorSession: Codable, Identifiable, Equatable, Sendable {
     var statusReason: String? = nil
     var exitCode: Int? = nil
     var isHistorical: Bool = false
+    var isYolo: Bool = false
 
     var hasLocalTranscriptFile: Bool {
         let expanded = NSString(string: transcriptPath).expandingTildeInPath
@@ -1505,9 +1511,12 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiAutoAllowSessionPermissions: Bool = true
     var geminiAutomationEnabled: Bool = true
     var geminiNeverSwitch: Bool = false
+    var geminiYolo: Bool = false
+    var geminiSetHomeToIso: Bool = false
     var geminiQuietChildNodeWarnings: Bool = true
     var geminiRawOutput: Bool = false
     var geminiManualOverrideMs: Int = 20_000
+    var geminiCapacityRetryMs: Int = 5000
     var geminiHotkeyPrefix: String = "ctrl-g"
     var geminiAutomationRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var nodeExecutable: String = "node"
@@ -1695,9 +1704,10 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
             case .aggressive:
                 geminiAutomationEnabled = true
                 geminiAutoAllowSessionPermissions = true
-                geminiAutoContinueMode = .capacity
-                geminiKeepTryMax = 50
+                geminiAutoContinueMode = .yolo
+                geminiKeepTryMax = 1000
                 geminiNeverSwitch = false
+                geminiYolo = true
             }
         case .copilot:
             switch preset {
@@ -1745,7 +1755,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         case id, name, isFavorite, tags, notes
         case agentKind, workingDirectory, terminalApp, iTermProfile, openMode, extraCLIArgs, shellBootstrapCommand, openWorkspaceInFinderOnLaunch, openWorkspaceInVSCodeOnLaunch, tabLaunchDelayMs, environmentEntries, environmentPresetID, bootstrapPresetID
         case autoLaunchCompanions, companionProfileIDs
-        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
+        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiYolo, geminiSetHomeToIso, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiCapacityRetryMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
         case copilotExecutable, copilotMode, copilotModel, copilotHome, copilotInitialPrompt, copilotMaxAutopilotContinues
         case codexExecutable, codexMode, codexModel
         case claudeExecutable, claudeModel
@@ -1787,25 +1797,18 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         geminiISOHome = try container.decodeDefault(String.self, forKey: .geminiISOHome, default: defaults.geminiISOHome)
         geminiInitialModel = try container.decodeDefault(String.self, forKey: .geminiInitialModel, default: defaults.geminiInitialModel)
         geminiModelChain = try container.decodeDefault(String.self, forKey: .geminiModelChain, default: defaults.geminiModelChain)
-        let legacyProModelChains: Set<String> = [
-            "gemini-3-pro-preview,gemini-3-flash-preview,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
-            "gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite"
-        ]
-        if legacyProModelChains.contains(geminiModelChain.replacingOccurrences(of: " ", with: "")) {
-            geminiModelChain = geminiFlavor.defaultModelChain
-        }
-        if ["gemini-3-pro-preview", "gemini-2.5-pro"].contains(geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            geminiInitialModel = geminiFlavor.defaultInitialModel
-        }
         geminiResumeLatest = try container.decodeDefault(Bool.self, forKey: .geminiResumeLatest, default: defaults.geminiResumeLatest)
         geminiKeepTryMax = try container.decodeDefault(Int.self, forKey: .geminiKeepTryMax, default: defaults.geminiKeepTryMax)
         geminiAutoContinueMode = try container.decodeDefault(AutoContinueMode.self, forKey: .geminiAutoContinueMode, default: defaults.geminiAutoContinueMode)
         geminiAutoAllowSessionPermissions = try container.decodeDefault(Bool.self, forKey: .geminiAutoAllowSessionPermissions, default: defaults.geminiAutoAllowSessionPermissions)
         geminiAutomationEnabled = try container.decodeDefault(Bool.self, forKey: .geminiAutomationEnabled, default: defaults.geminiAutomationEnabled)
         geminiNeverSwitch = try container.decodeDefault(Bool.self, forKey: .geminiNeverSwitch, default: defaults.geminiNeverSwitch)
+        geminiYolo = try container.decodeDefault(Bool.self, forKey: .geminiYolo, default: defaults.geminiYolo)
+        geminiSetHomeToIso = try container.decodeDefault(Bool.self, forKey: .geminiSetHomeToIso, default: defaults.geminiSetHomeToIso)
         geminiQuietChildNodeWarnings = try container.decodeDefault(Bool.self, forKey: .geminiQuietChildNodeWarnings, default: defaults.geminiQuietChildNodeWarnings)
         geminiRawOutput = try container.decodeDefault(Bool.self, forKey: .geminiRawOutput, default: defaults.geminiRawOutput)
         geminiManualOverrideMs = try container.decodeDefault(Int.self, forKey: .geminiManualOverrideMs, default: defaults.geminiManualOverrideMs)
+        geminiCapacityRetryMs = try container.decodeDefault(Int.self, forKey: .geminiCapacityRetryMs, default: defaults.geminiCapacityRetryMs)
         geminiHotkeyPrefix = try container.decodeDefault(String.self, forKey: .geminiHotkeyPrefix, default: defaults.geminiHotkeyPrefix)
         geminiAutomationRunnerPath = try container.decodeDefault(String.self, forKey: .geminiAutomationRunnerPath, default: defaults.geminiAutomationRunnerPath)
         nodeExecutable = try container.decodeDefault(String.self, forKey: .nodeExecutable, default: defaults.nodeExecutable)
