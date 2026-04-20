@@ -472,6 +472,20 @@ enum ITermOpenMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum TerminalApp: String, CaseIterable, Codable, Identifiable {
+    case iterm2
+    case terminal
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .iterm2: return "iTerm2"
+        case .terminal: return "Terminal.app"
+        }
+    }
+}
+
 enum AutoContinueMode: String, CaseIterable, Codable, Identifiable {
     case off
     case promptOnly = "prompt_only"
@@ -1394,6 +1408,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
 
     var agentKind: AgentKind = .gemini
     var workingDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
+    var terminalApp: TerminalApp = .iterm2
     var iTermProfile: String = ""
     var openMode: ITermOpenMode = .newWindow
     var extraCLIArgs: String = ""
@@ -1643,7 +1658,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, isFavorite, tags, notes
-        case agentKind, workingDirectory, iTermProfile, openMode, extraCLIArgs, shellBootstrapCommand, openWorkspaceInFinderOnLaunch, openWorkspaceInVSCodeOnLaunch, tabLaunchDelayMs, environmentEntries, environmentPresetID, bootstrapPresetID
+        case agentKind, workingDirectory, terminalApp, iTermProfile, openMode, extraCLIArgs, shellBootstrapCommand, openWorkspaceInFinderOnLaunch, openWorkspaceInVSCodeOnLaunch, tabLaunchDelayMs, environmentEntries, environmentPresetID, bootstrapPresetID
         case autoLaunchCompanions, companionProfileIDs
         case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
         case copilotExecutable, copilotMode, copilotModel, copilotHome, copilotInitialPrompt, copilotMaxAutopilotContinues
@@ -1667,6 +1682,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
 
         agentKind = try container.decodeDefault(AgentKind.self, forKey: .agentKind, default: defaults.agentKind)
         workingDirectory = try container.decodeDefault(String.self, forKey: .workingDirectory, default: defaults.workingDirectory)
+        terminalApp = try container.decodeDefault(TerminalApp.self, forKey: .terminalApp, default: defaults.terminalApp)
         iTermProfile = try container.decodeDefault(String.self, forKey: .iTermProfile, default: defaults.iTermProfile)
         openMode = try container.decodeDefault(ITermOpenMode.self, forKey: .openMode, default: defaults.openMode)
         extraCLIArgs = try container.decodeDefault(String.self, forKey: .extraCLIArgs, default: defaults.extraCLIArgs)
@@ -1745,6 +1761,7 @@ struct PlannedLaunchItem: Identifiable, Equatable {
     var profileName: String
     var command: String
     var openMode: ITermOpenMode
+    var terminalApp: TerminalApp = .iterm2
     var iTermProfile: String
     var description: String
     var monitorSessionID: UUID? = nil

@@ -504,6 +504,7 @@ struct LaunchPlanner {
                 profileName: primary.name,
                 command: primaryResult.command,
                 openMode: primary.openMode,
+                terminalApp: primary.terminalApp,
                 iTermProfile: primary.trimmedITermProfile,
                 description: primaryResult.description
             )
@@ -521,6 +522,7 @@ struct LaunchPlanner {
                         profileName: companion.name,
                         command: result.command,
                         openMode: .newTab,
+                        terminalApp: companion.terminalApp,
                         iTermProfile: companion.trimmedITermProfile,
                         description: result.description
                     )
@@ -559,6 +561,7 @@ struct LaunchPlanner {
                     profileName: label,
                     command: result.command,
                     openMode: index == 0 ? original.openMode : .newTab,
+                    terminalApp: adjusted.terminalApp,
                     iTermProfile: adjusted.trimmedITermProfile,
                     description: result.description
                 )
@@ -1842,21 +1845,7 @@ struct ITerm2Launcher {
     }
 
     private func materializeLaunchScript(command: String) -> String {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-        let file = dir.appendingPathComponent("clilauncher-launch-\(UUID().uuidString).sh")
-        let body = """
-        #!/bin/zsh -l
-        [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
-        \(command)
-        """
-        do {
-            try body.write(to: file, atomically: true, encoding: .utf8)
-            let fm = FileManager.default
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
-        } catch {
-            // Fall back to /tmp path even if write failed; iTerm will surface the error.
-        }
-        return file.path
+        LaunchScriptMaterializer.materialize(command: command)
     }
 
     private func commandPreview(_ command: String, limit: Int = 220) -> String {
@@ -1879,6 +1868,103 @@ struct ITerm2Launcher {
     private func appleScriptQuote(_ value: String) -> String {
         value.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
+enum LaunchScriptMaterializer {
+    static func materialize(command: String) -> String {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let file = dir.appendingPathComponent("clilauncher-launch-\(UUID().uuidString).sh")
+        let body = """
+        #!/bin/zsh -l
+        [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
+        \(command)
+        """
+        do {
+            try body.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        } catch {
+            // If write fails, the terminal will surface the error.
+        }
+        return file.path
+    }
+}
+
+struct TerminalAppLauncher {
+    private let executor = AppleScriptExecutionService()
+
+    @MainActor
+    func launch(plan: PlannedLaunch, logger: LaunchLogger? = nil, observability: ObservabilitySettings = ObservabilitySettings()) throws {
+        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1000.0)
+        LaunchLoggerBridge.log(logger, .info, "Launching \(plan.items.count) Terminal.app session(s).", category: .iterm, details: "tabDelayMs=\(plan.tabLaunchDelayMs)")
+        for (index, item) in plan.items.enumerated() {
+            let scriptPath = LaunchScriptMaterializer.materialize(command: item.command)
+            let source = buildAppleScript(scriptPath: scriptPath)
+            do {
+                _ = try executor.execute(source: source)
+                LaunchLoggerBridge.debug(logger, "Terminal.app AppleScript executed.", category: .iterm, details: "profile=\(item.profileName) • script=\(scriptPath)")
+            } catch {
+                LaunchLoggerBridge.log(logger, .error, "Terminal.app AppleScript failed.", category: .iterm, details: error.localizedDescription)
+                throw error
+            }
+            if index < plan.items.count - 1 {
+                Thread.sleep(forTimeInterval: delaySeconds)
+            }
+        }
+    }
+
+    private func buildAppleScript(scriptPath: String) -> String {
+        let escaped = scriptPath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return """
+        tell application "Terminal"
+          activate
+          do script "\(escaped)"
+        end tell
+        """
+    }
+}
+
+struct TerminalLauncherDispatcher {
+    private let iterm = ITerm2Launcher()
+    private let terminal = TerminalAppLauncher()
+
+    @MainActor
+    func launch(plan: PlannedLaunch, logger: LaunchLogger? = nil, observability: ObservabilitySettings = ObservabilitySettings()) throws {
+        guard !plan.items.isEmpty else { return }
+        let groups = groupContiguous(items: plan.items)
+        for group in groups {
+            let subPlan = PlannedLaunch(items: group.items, postLaunchActions: [], tabLaunchDelayMs: plan.tabLaunchDelayMs)
+            switch group.app {
+            case .iterm2:
+                try iterm.launch(plan: subPlan, logger: logger, observability: observability)
+            case .terminal:
+                try terminal.launch(plan: subPlan, logger: logger, observability: observability)
+            }
+        }
+    }
+
+    func buildAppleScript(plan: PlannedLaunch) -> String {
+        iterm.buildAppleScript(plan: plan)
+    }
+
+    func diagnosticSnapshot(discoveredProfiles: [String], discoverySource: String) -> DiagnosticITermSnapshot {
+        iterm.diagnosticSnapshot(discoveredProfiles: discoveredProfiles, discoverySource: discoverySource)
+    }
+
+    private struct Group { var app: TerminalApp; var items: [PlannedLaunchItem] }
+
+    private func groupContiguous(items: [PlannedLaunchItem]) -> [Group] {
+        var groups: [Group] = []
+        for item in items {
+            if !groups.isEmpty, groups[groups.count - 1].app == item.terminalApp {
+                groups[groups.count - 1].items.append(item)
+            } else {
+                groups.append(Group(app: item.terminalApp, items: [item]))
+            }
+        }
+        return groups
     }
 }
 

@@ -28,7 +28,7 @@ struct ContentView: View {
     private let planner = LaunchPlanner()
     private let preflight = PreflightService()
     private let iTermProfiles = ITerm2ProfileService()
-    private let iTermLauncher = ITerm2Launcher()
+    private let iTermLauncher = TerminalLauncherDispatcher()
     private let launcherExporter = LauncherExportService()
     private let companionLauncher = WorkspaceCompanionLauncher()
 
@@ -632,16 +632,24 @@ struct ContentView: View {
                             }
                         }
 
-                        Picker("Open in iTerm2", selection: profile.openMode) {
+                        Picker("Terminal application", selection: profile.terminalApp) {
+                            ForEach(TerminalApp.allCases) { app in
+                                Text(app.displayName).tag(app)
+                            }
+                        }
+
+                        Picker("Open in \(profile.wrappedValue.terminalApp.displayName)", selection: profile.openMode) {
                             ForEach(ITermOpenMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
                         }
 
-                        Picker("iTerm2 profile", selection: profile.iTermProfile) {
-                            Text("Default Profile").tag("")
-                            ForEach(availableITermProfiles, id: \.self) { item in
-                                Text(item).tag(item)
+                        if profile.wrappedValue.terminalApp == .iterm2 {
+                            Picker("iTerm2 profile", selection: profile.iTermProfile) {
+                                Text("Default Profile").tag("")
+                                ForEach(availableITermProfiles, id: \.self) { item in
+                                    Text(item).tag(item)
+                                }
                             }
                         }
 
