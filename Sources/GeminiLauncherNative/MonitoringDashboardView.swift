@@ -78,16 +78,7 @@ struct MonitoringDashboardView: View {
         return terminalMonitor.sessions.filter { session in
             guard sourceFilter.matches(session), statusFilter.matches(session) else { return false }
             guard !query.isEmpty else { return true }
-            return session.profileName.lowercased().contains(query) ||
-                session.workingDirectory.lowercased().contains(query) ||
-                session.transcriptPath.lowercased().contains(query) ||
-                session.lastPreview.lowercased().contains(query) ||
-                session.lastDatabaseMessage.lowercased().contains(query) ||
-                (session.statusReason?.lowercased().contains(query) ?? false) ||
-                (session.lastError?.lowercased().contains(query) ?? false) ||
-                session.agentKind.displayName.lowercased().contains(query) ||
-                session.status.displayName.lowercased().contains(query) ||
-                session.id.uuidString.lowercased().contains(query)
+            return matches(query, session: session)
         }
     }
 
@@ -102,19 +93,57 @@ struct MonitoringDashboardView: View {
     }
 
     private var liveSessionCount: Int {
-        terminalMonitor.sessions.filter { !$0.isHistorical }.count
+        sessionCounts.live
     }
 
     private var historicalSessionCount: Int {
-        terminalMonitor.sessions.filter(\.isHistorical).count
+        sessionCounts.historical
     }
 
     private var completedSessionCount: Int {
-        terminalMonitor.sessions.filter { $0.status == .completed }.count
+        sessionCounts.completed
     }
 
     private var failedSessionCount: Int {
-        terminalMonitor.sessions.filter { $0.status == .failed || $0.status == .stopped }.count
+        sessionCounts.failed
+    }
+
+    private var sessionCounts: (live: Int, historical: Int, completed: Int, failed: Int) {
+        var live = 0
+        var historical = 0
+        var completed = 0
+        var failed = 0
+
+        for session in terminalMonitor.sessions {
+            if session.isHistorical {
+                historical += 1
+            } else {
+                live += 1
+            }
+            switch session.status {
+            case .completed:
+                completed += 1
+            case .failed, .stopped:
+                failed += 1
+            default:
+                break
+            }
+        }
+
+        return (live: live, historical: historical, completed: completed, failed: failed)
+    }
+
+    private func matches(_ query: String, session: TerminalMonitorSession) -> Bool {
+        return session.profileName.localizedCaseInsensitiveContains(query) ||
+            session.workingDirectory.localizedCaseInsensitiveContains(query) ||
+            session.transcriptPath.localizedCaseInsensitiveContains(query) ||
+            session.lastPreview.localizedCaseInsensitiveContains(query) ||
+            session.lastDatabaseMessage.localizedCaseInsensitiveContains(query) ||
+            (session.statusReason?.localizedCaseInsensitiveContains(query) ?? false) ||
+            (session.lastError?.localizedCaseInsensitiveContains(query) ?? false) ||
+            session.agentKind.displayName.localizedCaseInsensitiveContains(query) ||
+            session.status.displayName.localizedCaseInsensitiveContains(query) ||
+            session.id.uuidString.localizedCaseInsensitiveContains(query)
     }
 
     var body: some View {
@@ -138,9 +167,8 @@ struct MonitoringDashboardView: View {
         }
         .onChange(of: terminalMonitor.sessions) { _ in
             syncSelection()
-            loadSelectedDetails(forceRefresh: false)
         }
-        .onChange(of: store.settings.postgresMonitoring) { _ in
+        .onChange(of: store.settings.mongoMonitoring) { _ in
             terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger)
         }
         .onChange(of: searchText) { _ in
@@ -160,13 +188,16 @@ struct MonitoringDashboardView: View {
             isPresented: $showingPruneConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Prune Now", role: .destructive) {
+            Button("Prune Older than Retention", role: .destructive) {
                 terminalMonitor.pruneStoredHistory(settings: store.settings, logger: logger)
+            }
+            Button("Clear All History", role: .destructive) {
+                terminalMonitor.clearStoredHistory(settings: store.settings, logger: logger)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "This removes completed and failed MongoDB session history older than \(store.settings.postgresMonitoring.clampedDatabaseRetentionDays) day(s) and local transcript files older than \(store.settings.postgresMonitoring.clampedLocalTranscriptRetentionDays) day(s)."
+                "Pruning removes history older than the configured retention period. Clearing all history wipes all monitoring data."
             )
         }
     }
@@ -180,7 +211,7 @@ struct MonitoringDashboardView: View {
                 HStack(spacing: 14) {
                     Label("\(terminalMonitor.sessions.count) total", systemImage: "list.bullet.rectangle")
                     Label("\(liveSessionCount) live", systemImage: "waveform.path.ecg")
-                    if store.settings.postgresMonitoring.enablePostgresWrites {
+                    if store.settings.mongoMonitoring.enableMongoWrites {
                         Label("\(historicalSessionCount) from MongoDB", systemImage: "externaldrive.badge.icloud")
                     }
                     Label("\(completedSessionCount) completed", systemImage: "checkmark.circle")
@@ -193,8 +224,8 @@ struct MonitoringDashboardView: View {
                     if !terminalMonitor.lastConnectionCheck.isEmpty {
                         Label("Last checked \(terminalMonitor.lastConnectionCheck)", systemImage: "clock")
                     }
-                    if store.settings.postgresMonitoring.enablePostgresWrites {
-                        Label(store.settings.postgresMonitoring.redactedConnectionDescription, systemImage: "externaldrive.badge.icloud")
+                    if store.settings.mongoMonitoring.enableMongoWrites {
+                        Label(store.settings.mongoMonitoring.redactedConnectionDescription, systemImage: "externaldrive.badge.icloud")
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } else {
@@ -208,14 +239,14 @@ struct MonitoringDashboardView: View {
                     Button("Test MongoDB Connection") {
                         terminalMonitor.testConnection(settings: store.settings, logger: logger)
                     }
-                    .disabled(!store.settings.postgresMonitoring.enabled)
+                    .disabled(!store.settings.mongoMonitoring.enabled)
 
                     Button("Refresh Recent Sessions") {
-                        terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger)
-                        terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger)
+                        terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger, force: true)
+                        terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger, force: true)
                         loadSelectedDetails(forceRefresh: true)
                     }
-                    .disabled(!store.settings.postgresMonitoring.enabled || !store.settings.postgresMonitoring.enablePostgresWrites)
+                    .disabled(!store.settings.mongoMonitoring.enabled || !store.settings.mongoMonitoring.enableMongoWrites)
 
                     Button("Reveal Transcript Folder") {
                         terminalMonitor.revealTranscriptDirectory(settings: store.settings)
@@ -278,7 +309,7 @@ struct MonitoringDashboardView: View {
 
                 HStack(spacing: 12) {
                     Text(
-                        "Retention: DB \(store.settings.postgresMonitoring.clampedDatabaseRetentionDays) day(s) • local transcripts \(store.settings.postgresMonitoring.clampedLocalTranscriptRetentionDays) day(s)"
+                        "Retention: DB \(store.settings.mongoMonitoring.clampedDatabaseRetentionDays) day(s) • local transcripts \(store.settings.mongoMonitoring.clampedLocalTranscriptRetentionDays) day(s)"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -299,14 +330,14 @@ struct MonitoringDashboardView: View {
 
                 HStack {
                     Button("Refresh Storage Stats") {
-                        terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger)
+                        terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger, force: true)
                     }
-                    .disabled(!store.settings.postgresMonitoring.enabled)
+                    .disabled(!store.settings.mongoMonitoring.enabled)
 
                     Button("Prune Stored History…") {
                         showingPruneConfirmation = true
                     }
-                    .disabled(!store.settings.postgresMonitoring.enabled || terminalMonitor.isPruningStoredHistory)
+                    .disabled(!store.settings.mongoMonitoring.enabled || terminalMonitor.isPruningStoredHistory)
                 }
             }
         }
@@ -334,19 +365,19 @@ struct MonitoringDashboardView: View {
 
             Spacer()
 
-            Text(store.settings.postgresMonitoring.captureMode.displayName)
+            Text(store.settings.mongoMonitoring.captureMode.displayName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if store.settings.postgresMonitoring.enablePostgresWrites {
+            if store.settings.mongoMonitoring.enableMongoWrites {
                 Text(
-                    "Recent DB history: \(store.settings.postgresMonitoring.clampedRecentHistoryLookbackDays) day(s) / \(store.settings.postgresMonitoring.clampedRecentHistoryLimit) sessions"
+                    "Recent DB history: \(store.settings.mongoMonitoring.clampedRecentHistoryLookbackDays) day(s) / \(store.settings.mongoMonitoring.clampedRecentHistoryLimit) sessions"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
                 Text(
-                    "Detail load: \(store.settings.postgresMonitoring.clampedDetailEventLimit) events / \(store.settings.postgresMonitoring.clampedDetailChunkLimit) chunks"
+                    "Detail load: \(store.settings.mongoMonitoring.clampedDetailEventLimit) events / \(store.settings.mongoMonitoring.clampedDetailChunkLimit) chunks"
                 )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -378,25 +409,29 @@ struct MonitoringDashboardView: View {
 
     @ViewBuilder
     private func sessionRow(_ session: TerminalMonitorSession) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: session.status.systemImage)
+                    .foregroundStyle(statusColor(for: session.status))
+                    .frame(width: 16)
+                
                 Text(session.profileName)
                     .font(.headline)
-                if session.isHistorical {
-                        Text("MongoDB")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.12))
-                        .cornerRadius(7)
-                }
+                
                 Spacer()
-                Label(session.status.displayName, systemImage: session.status.systemImage)
-                    .font(.caption)
-                    .foregroundStyle(statusColor(for: session.status))
+                
+                if session.isHistorical {
+                    Text("DB")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.15))
+                        .foregroundStyle(.blue)
+                        .cornerRadius(4)
+                }
             }
 
-            Text(session.agentKind.displayName + " • " + session.workingDirectory)
+            Text("\(session.agentKind.displayName) • \(session.workingDirectory)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -405,25 +440,28 @@ struct MonitoringDashboardView: View {
             if !session.lastPreview.isEmpty {
                 Text(session.lastPreview)
                     .font(.system(.caption, design: .monospaced))
-                    .lineLimit(3)
-                    .padding(8)
+                    .lineLimit(2)
+                    .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.secondary.opacity(0.08))
-                    .cornerRadius(8)
+                    .cornerRadius(6)
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Label("\(session.chunkCount)", systemImage: "waveform")
+                    .font(.caption2)
                 Label(byteCountString(session.byteCount), systemImage: "internaldrive")
-                Label(session.activityDate.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+                    .font(.caption2)
                 if let exitCode = session.exitCode {
                     Label("exit \(exitCode)", systemImage: exitCode == 0 ? "checkmark.circle" : "exclamationmark.triangle")
                 }
+                Spacer()
+                Text(session.activityDate.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder

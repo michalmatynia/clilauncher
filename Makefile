@@ -3,11 +3,11 @@ SHELL := /bin/bash
 .PHONY: lint test ci
 
 lint:
-\t./Scripts/lint.sh
+	./Scripts/lint.sh
 
 test:
-\t./Scripts/test.sh
+	./Scripts/test.sh
 
 ci:
-\t$(MAKE) lint
-\t$(MAKE) test
+	$(MAKE) lint
+	$(MAKE) test

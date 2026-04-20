@@ -80,12 +80,12 @@ const MENU_SELECT_MIN_MS = toNumber(process.env.MENU_SELECT_MIN_MS, 280);
 const MENU_CONFIRM_MIN_MS = toNumber(process.env.MENU_CONFIRM_MIN_MS, 650);
 const MENU_FALLBACK_AFTER_SELECTS = toNumber(process.env.MENU_FALLBACK_AFTER_SELECTS, 2);
 const QUICK_RECHECK_MS = toNumber(process.env.QUICK_RECHECK_MS, 220);
-const DIALOG_BOTTOM_WINDOW_LINES = toNumber(process.env.DIALOG_BOTTOM_WINDOW_LINES, 36);
+const DIALOG_BOTTOM_WINDOW_LINES = toNumber(process.env.DIALOG_BOTTOM_WINDOW_LINES, 100);
 const DIALOG_CONTEXT_LINES = toNumber(process.env.DIALOG_CONTEXT_LINES, 6);
 const CHAT_PROMPT_WINDOW_LINES = toNumber(process.env.CHAT_PROMPT_WINDOW_LINES, 8);
 const MENU_ACTION_LIMIT = toNumber(process.env.MENU_ACTION_LIMIT, 6);
 const MENU_NAV_MAX_ATTEMPTS = toNumber(process.env.MENU_NAV_MAX_ATTEMPTS, 4);
-const MENU_NUMERIC_MAX_ATTEMPTS = toNumber(process.env.MENU_NUMERIC_MAX_ATTEMPTS, 1);
+const MENU_NUMERIC_MAX_ATTEMPTS = toNumber(process.env.MENU_NUMERIC_MAX_ATTEMPTS, 2);
 const MENU_CONFIRM_MAX_ATTEMPTS = toNumber(process.env.MENU_CONFIRM_MAX_ATTEMPTS, 2);
 
 const AUTO_CONTINUE_MODE = ((process.env.AUTO_CONTINUE_MODE || 'prompt_only').trim().toLowerCase());
@@ -125,6 +125,7 @@ const KEEP_LABELS = splitListEnv(process.env.KEEP_OPTION_LABELS, [
   'keep trying',
   'try again',
   'continue waiting',
+  'retrying',
 ]);
 const SWITCH_LABELS = splitListEnv(process.env.SWITCH_OPTION_LABELS, [
   'switch to',
@@ -279,6 +280,11 @@ function spawnGeminiWithPty() {
   switching = false;
 
   activeRunId += 1;
+  if (activeRunId === 1) {
+    console.log(
+      `[${FLAVOR_LABEL}] Automation: ${automationEnabled ? 'ENABLED' : 'DISABLED'} (Hotkey: ${HOTKEY_PREFIX_LABEL} a to toggle, ${HOTKEY_PREFIX_LABEL} o on, ${HOTKEY_PREFIX_LABEL} x off)`
+    );
+  }
   screenModel?.reset();
   clearMenuPlan();
   rawTail = '';
@@ -613,7 +619,7 @@ function logLaunchBanner({ model, canResume, wrapperInfo, launchPlan }) {
   ];
 
   if (loadedPty) {
-    lines.push(`[${FLAVOR_LABEL}] Local controls: ${HOTKEY_PREFIX_LABEL} h help, ${HOTKEY_PREFIX_LABEL} a toggle auto, ${HOTKEY_PREFIX_LABEL} s switch model, ${HOTKEY_PREFIX_LABEL} q quit`);
+    lines.push(`[${FLAVOR_LABEL}] Local controls: ${hotkeySummary()}`);
   }
   if (wrapperInfo.kind === 'script' && wrapperInfo.shebang) {
     lines.push(`[${FLAVOR_LABEL}] Script shebang: ${wrapperInfo.shebang}${wrapperInfo.hasCRLFShebang ? ' [CRLF detected]' : ''}`);
@@ -830,6 +836,9 @@ function detectSnapshotFromText(text, source) {
     /no\s+capacity\s+available/i,
     /high\s+demand\s+right\s+now/i,
     /temporarily\s+unavailable/i,
+    /currently\s+experiencing/i,
+    /\/model\s+to\s+switch\s+models/i,
+    /appreciate\s+your\s+patience/i,
   ];
 
   const hasCapacity = capacityPatterns.some((pattern) => pattern.test(recentTail));
@@ -918,10 +927,10 @@ function parseOptionLine(rawLine, index) {
   const trimmedRight = String(rawLine || '').replace(/\s+$/g, '');
   if (!trimmedRight) return null;
 
-  const withoutBox = trimmedRight.replace(/^[│║┃|\s]+/u, '');
+  const withoutBox = trimmedRight.replace(/^[│║┃|\s]+/u, '').replace(/[│║┃|]\s*$/u, '');
   const selected = /^[•●◦○▪◆▶➜»›>*-]+\s*/u.test(withoutBox);
   const stripped = withoutBox.replace(/^[•●◦○▪◆▶➜»›>*-]+\s*/u, '').trim();
-  const match = stripped.match(/^(\d+)\s*[.):-]?\s+(.+)$/u);
+  const match = stripped.match(/^(\d+)\s*[.):-]?\s+(.+)$/u) || stripped.match(/^(\d+)\s*\)\s+(.+)$/u);
   if (!match) return null;
 
   const canonical = normalizeLabel(match[2]);
@@ -1054,9 +1063,13 @@ function findCapacityMenuBlock(rawLines, blocks, chatPromptActive) {
       context.includes('high demand') ||
       context.includes('no capacity') ||
       context.includes('temporarily unavailable') ||
-      context.includes('currently experiencing');
-    const hasSelectionCue = Boolean(block.selectedOption) || /[•●◦○▪◆▶➜»›]/u.test(block.contextLines.join('\n'));
-    if (hasCapacityAnchor && hasSelectionCue) return block;
+      context.includes('currently experiencing') ||
+      context.includes('switch models');
+    const isVeryStrongAnchor = context.includes('experiencing high demand') || context.includes('no capacity available');
+    const hasEnoughMenuDensity = block.options.length >= 2 || block.selectedOption !== null;
+
+    if (isVeryStrongAnchor) return block;
+    if (hasCapacityAnchor && hasEnoughMenuDensity) return block;
   }
   return null;
 }
@@ -1559,6 +1572,31 @@ function runMenuPlanForOption(runId, snapshot, targetOption, label) {
     (option) => option.numberText === target.numberText && option.canonical === target.canonical
   );
 
+  if (snapshot.kind === 'capacity_menu' && Boolean(target.numberText && target.numberText.trim()) && plan.numericAttempts < MENU_NUMERIC_MAX_ATTEMPTS) {
+    plan.phase = 'numeric';
+    plan.numericAttempts += 1;
+    plan.totalActions += 1;
+    plan.lastSentAt = now;
+    rememberAction(`${snapshot.kind}:${snapshot.fingerprint}:numeric:${target.numberText}`);
+    sendChoice(target.numberText, `${label}:select-number`, runId);
+    scheduleStaticRecheck(QUICK_RECHECK_MS);
+    return true;
+  }
+
+  const numericAllowed = snapshot.blockMode === 'radio' && !snapshot.chatPromptActive
+    && Boolean(target.numberText && target.numberText.trim())
+    && plan.numericAttempts < MENU_NUMERIC_MAX_ATTEMPTS;
+  if (numericAllowed) {
+    plan.phase = 'numeric';
+    plan.numericAttempts += 1;
+    plan.totalActions += 1;
+    plan.lastSentAt = now;
+    rememberAction(`${snapshot.kind}:${snapshot.fingerprint}:numeric:${target.numberText}`);
+    sendChoice(target.numberText, `${label}:select-number`, runId);
+    scheduleStaticRecheck(QUICK_RECHECK_MS);
+    return true;
+  }
+
   if (target.selected) {
     if (plan.confirmAttempts >= MENU_CONFIRM_MAX_ATTEMPTS) {
       pauseAutomationTemporarily(AUTOMATION_COOLDOWN_MS, `${label} confirm limit reached`);
@@ -1591,18 +1629,6 @@ function runMenuPlanForOption(runId, snapshot, targetOption, label) {
     plan.lastSentAt = now;
     rememberAction(`${snapshot.kind}:${snapshot.fingerprint}:nav:${delta}`);
     sendRaw(navSequence, `${label}:arrow-focus`);
-    scheduleStaticRecheck(QUICK_RECHECK_MS);
-    return true;
-  }
-
-  const numericAllowed = snapshot.blockMode === 'radio' && !snapshot.chatPromptActive;
-  if (numericAllowed && plan.numericAttempts < MENU_NUMERIC_MAX_ATTEMPTS) {
-    plan.phase = 'numeric';
-    plan.numericAttempts += 1;
-    plan.totalActions += 1;
-    plan.lastSentAt = now;
-    rememberAction(`${snapshot.kind}:${snapshot.fingerprint}:numeric:${target.numberText}`);
-    sendRaw(target.numberText, `${label}:select-number`);
     scheduleStaticRecheck(QUICK_RECHECK_MS);
     return true;
   }
@@ -1800,7 +1826,7 @@ function onUserInput(chunk) {
     if (byte === HOTKEY_PREFIX_BYTE) {
       hotkeyAwaitingCommand = true;
       armHotkeyTimer();
-      process.stderr.write(`\n[local] Prefix detected (${HOTKEY_PREFIX_LABEL}). Press h help, a auto, p pause, e recheck, i status, s switch, r restart, c Ctrl-C, q quit.\n`);
+      process.stderr.write(`\n[local] Prefix detected (${HOTKEY_PREFIX_LABEL}). Press h help, a auto toggle, o enable, x disable, p pause, e recheck, i status, s switch, r restart, c Ctrl-C, q quit.\n`);
       continue;
     }
 
@@ -1863,6 +1889,18 @@ function handleHotkeyCommand(byte) {
       setAutomationEnabled(true);
       console.error(`\n[local] Automation enabled.\n`);
     }
+    return;
+  }
+
+  if (command === 'o') {
+    setAutomationEnabled(true, 'manual');
+    console.error(`\n[local] Automation enabled.\n`);
+    return;
+  }
+
+  if (command === 'x') {
+    setAutomationEnabled(false, 'manual');
+    console.error(`\n[local] Automation disabled. ${HOTKEY_PREFIX_LABEL} o to re-enable.\n`);
     return;
   }
 
@@ -2095,7 +2133,7 @@ function scheduleStaticRecheck(delay = STATIC_RECHECK_MS) {
 }
 
 function hotkeySummary() {
-  return `${HOTKEY_PREFIX_LABEL} h help | ${HOTKEY_PREFIX_LABEL} a auto on/off | ${HOTKEY_PREFIX_LABEL} p pause auto | ${HOTKEY_PREFIX_LABEL} e recheck | ${HOTKEY_PREFIX_LABEL} i status | ${HOTKEY_PREFIX_LABEL} s switch | ${HOTKEY_PREFIX_LABEL} r restart | ${HOTKEY_PREFIX_LABEL} c Ctrl-C | ${HOTKEY_PREFIX_LABEL} q quit`;
+  return `${HOTKEY_PREFIX_LABEL} h help | ${HOTKEY_PREFIX_LABEL} a auto toggle | ${HOTKEY_PREFIX_LABEL} o automation on | ${HOTKEY_PREFIX_LABEL} x automation off | ${HOTKEY_PREFIX_LABEL} p pause auto | ${HOTKEY_PREFIX_LABEL} e recheck | ${HOTKEY_PREFIX_LABEL} i status | ${HOTKEY_PREFIX_LABEL} s switch | ${HOTKEY_PREFIX_LABEL} r restart | ${HOTKEY_PREFIX_LABEL} c Ctrl-C | ${HOTKEY_PREFIX_LABEL} q quit`;
 }
 
 function printLocalHelp() {

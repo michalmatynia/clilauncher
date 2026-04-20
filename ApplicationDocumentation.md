@@ -29,6 +29,7 @@ Each profile maps to one provider. Active provider kinds are:
 - Claude Bypass
 - Kiro CLI
 - Ollama Launch
+- **Aider**
 
 Profiles include:
 
@@ -54,7 +55,10 @@ Workbenches launch multiple profiles as a single orchestrated plan:
 
 - launch history and errors/warnings are tracked in-app,
 - terminal process events are recorded with optional retention settings in a MongoDB-backed history store,
-- diagnostics exports are available as JSON bundles for sharing support issues.
+- diagnostics exports are available as JSON bundles for sharing support issues,
+- **Session Export**: Export transcripts and session metadata to JSON from the monitoring dashboard,
+- **Clear History**: Wipes all monitoring records and local transcripts,
+- **Connection Diagnostics**: Test MongoDB connectivity with real-time feedback.
 
 ## 3) Command flow
 
@@ -127,6 +131,10 @@ Legacy state folders are migrated automatically when found:
   - Confirm the `Automation runner`, `Node`, and `Gemini PTY backend` statuses in diagnostics for automation-runner mode.
   - Leave the automation runner path blank if you want to use the app-bundled runner.
   - Install `@lydell/node-pty` or `node-pty` in the launch workspace if you need PTY hotkeys and prompt automation.
+  - In PTY-enabled automation-runner mode, capacity menus (`Keep trying` / `Switch` / `Stop`) are handled automatically.
+  - Toggle automation using keystrokes:
+    - App shortcut: **Cmd+Shift+A** (selected Gemini profile).
+    - Runner shortcut: **Ctrl-G a** (or your configured hotkey prefix + `a`).
   - Ensure working directory is expected by the selected launch mode.
 - **Preflight warnings but launch still succeeds**
   - Warnings can be informational; use error-state blocks for required blockers.

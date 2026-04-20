@@ -32,6 +32,8 @@ private struct DatabaseSessionRow: Decodable {
     var profile_id: String?
     var profile_name: String
     var agent_kind: String
+    var account_identifier: String?
+    var prompt: String?
     var working_directory: String
     var transcript_path: String
     var launch_command: String
@@ -54,6 +56,8 @@ private struct DatabaseSessionRow: Decodable {
             profileID: profile_id.flatMap(UUID.init(uuidString:)),
             profileName: profile_name,
             agentKind: AgentKind(rawValue: agent_kind) ?? .gemini,
+            accountIdentifier: account_identifier,
+            prompt: prompt ?? "",
             workingDirectory: working_directory,
             transcriptPath: transcript_path,
             launchCommand: launch_command,
@@ -134,8 +138,8 @@ private struct DatabaseStorageSummaryRow: Decodable {
     var oldest_session_at_epoch: Double?
     var newest_session_at_epoch: Double?
 
-    func makeSummary() -> PostgresStorageSummary {
-        PostgresStorageSummary(
+    func makeSummary() -> MongoStorageSummary {
+        MongoStorageSummary(
             sessionCount: session_count,
             activeSessionCount: active_session_count,
             completedSessionCount: completed_session_count,
@@ -204,7 +208,7 @@ private enum MonitorTimestamp {
 struct MonitoringDiagnosticsService {
     private let builder = CommandBuilder()
 
-    func inspect(settings: PostgresMonitoringSettings) -> [ToolStatus] {
+    func inspect(settings: MongoMonitoringSettings) -> [ToolStatus] {
         guard settings.enabled else { return [] }
 
         var statuses: [ToolStatus] = []
@@ -233,12 +237,12 @@ struct MonitoringDiagnosticsService {
             )
         )
 
-        if settings.enablePostgresWrites {
-            let mongoResolved = builder.resolvedExecutable(settings.psqlExecutable)
+        if settings.enableMongoWrites {
+            let mongoResolved = builder.resolvedExecutable(settings.mongoshExecutable)
             statuses.append(
                 ToolStatus(
                     name: "MongoDB CLI",
-                    requested: settings.psqlExecutable,
+                    requested: settings.mongoshExecutable,
                     resolved: mongoResolved,
                     detail: mongoResolved != nil ? "MongoDB shell resolved." : "MongoDB shell executable was not found",
                     isError: mongoResolved == nil
@@ -254,7 +258,7 @@ struct MonitoringDiagnosticsService {
                     detail: localMongo
                         ? (mongodResolved != nil ? "Local Mongo daemon executable resolved." : "Local Mongo connection uses localhost and requires mongod.")
                         : (mongodResolved != nil ? "mongod executable resolved." : "mongod executable was not found."),
-                    isError: localMongo && settings.enablePostgresWrites && mongodResolved == nil
+                    isError: localMongo && settings.enableMongoWrites && mongodResolved == nil
                 )
             )
             let hasConnection = !settings.trimmedConnectionURL.isEmpty
@@ -267,7 +271,7 @@ struct MonitoringDiagnosticsService {
                     isError: !hasConnection
                 )
             )
-            if settings.enablePostgresWrites {
+            if settings.enableMongoWrites {
                 let dataDirReady = ensureDirectoryExists(at: settings.expandedLocalDataDirectory)
                 statuses.append(
                     ToolStatus(
@@ -294,12 +298,12 @@ struct MonitoringDiagnosticsService {
     }
 }
 
-actor PostgresMonitoringWriter {
+actor MongoMonitoringWriter {
     private let commandBuilder = CommandBuilder()
     private var initializedFingerprint: String?
 
-    func testConnection(settings: PostgresMonitoringSettings) throws -> String {
-        guard settings.enablePostgresWrites else {
+    func testConnection(settings: MongoMonitoringSettings) throws -> String {
+        guard settings.enableMongoWrites else {
             return "Mongo writes are disabled."
         }
         let script = """
@@ -328,16 +332,16 @@ actor PostgresMonitoringWriter {
         return line
     }
 
-    func ensureSchema(settings: PostgresMonitoringSettings) throws {
-        guard settings.enablePostgresWrites else { return }
+    func ensureSchema(settings: MongoMonitoringSettings) throws {
+        guard settings.enableMongoWrites else { return }
         guard !settings.localDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         _ = try runMongo(ensureSchemaScript(settings: settings), settings: settings)
         let fingerprint = settings.trimmedConnectionURL + "|" + settings.trimmedSchemaName + "|" + settings.expandedLocalDataDirectory
         initializedFingerprint = fingerprint
     }
 
-    func recordSessionStart(_ session: TerminalMonitorSession, settings: PostgresMonitoringSettings) throws {
-        guard settings.enablePostgresWrites else { return }
+    func recordSessionStart(_ session: TerminalMonitorSession, settings: MongoMonitoringSettings) throws {
+        guard settings.enableMongoWrites else { return }
         try ensureSchema(settings: settings)
 
         let metadata: [String: Any] = [
@@ -370,7 +374,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const payload = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
             targetDb.terminal_sessions.updateOne(
@@ -428,9 +432,9 @@ actor PostgresMonitoringWriter {
         totalBytes: Int,
         capturedAt: Date,
         status: TerminalMonitorStatus,
-        settings: PostgresMonitoringSettings
+        settings: MongoMonitoringSettings
     ) throws {
-        guard settings.enablePostgresWrites else { return }
+        guard settings.enableMongoWrites else { return }
         try ensureSchema(settings: settings)
 
         let payload: [String: Any] = [
@@ -449,7 +453,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const payload = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
 
@@ -497,9 +501,9 @@ actor PostgresMonitoringWriter {
         endedAt: Date? = nil,
         statusReason: String? = nil,
         exitCode: Int? = nil,
-        settings: PostgresMonitoringSettings
+        settings: MongoMonitoringSettings
     ) throws {
-        guard settings.enablePostgresWrites else { return }
+        guard settings.enableMongoWrites else { return }
         try ensureSchema(settings: settings)
 
         let statusMessage = message ?? defaultMessage(for: status)
@@ -523,7 +527,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const payload = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
 
@@ -556,7 +560,7 @@ actor PostgresMonitoringWriter {
         _ = try runMongo(script, settings: settings)
     }
 
-    func recordFailure(sessionID: UUID, message: String, status: TerminalMonitorStatus, settings: PostgresMonitoringSettings) throws {
+    func recordFailure(sessionID: UUID, message: String, status: TerminalMonitorStatus, settings: MongoMonitoringSettings) throws {
         try recordStatus(
             sessionID: sessionID,
             status: status,
@@ -570,7 +574,7 @@ actor PostgresMonitoringWriter {
         )
     }
 
-    func recordCompletion(session: TerminalMonitorSession, settings: PostgresMonitoringSettings) throws {
+    func recordCompletion(session: TerminalMonitorSession, settings: MongoMonitoringSettings) throws {
         try recordStatus(
             sessionID: session.id,
             status: session.status,
@@ -584,8 +588,8 @@ actor PostgresMonitoringWriter {
         )
     }
 
-    func fetchRecentSessions(settings: PostgresMonitoringSettings, limit: Int, lookbackHours: Int) throws -> [TerminalMonitorSession] {
-        guard settings.enablePostgresWrites else { return [] }
+    func fetchRecentSessions(settings: MongoMonitoringSettings, limit: Int, lookbackHours: Int) throws -> [TerminalMonitorSession] {
+        guard settings.enableMongoWrites else { return [] }
         try ensureSchema(settings: settings)
 
         let safeLimit = max(1, min(200, limit))
@@ -598,7 +602,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const params = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
             const rows = targetDb.terminal_sessions.aggregate([
@@ -639,8 +643,8 @@ actor PostgresMonitoringWriter {
         return rows.map { $0.makeSession() }
     }
 
-    func fetchSessionEvents(sessionID: UUID, settings: PostgresMonitoringSettings, limit: Int) throws -> [TerminalSessionEvent] {
-        guard settings.enablePostgresWrites else { return [] }
+    func fetchSessionEvents(sessionID: UUID, settings: MongoMonitoringSettings, limit: Int) throws -> [TerminalSessionEvent] {
+        guard settings.enableMongoWrites else { return [] }
         try ensureSchema(settings: settings)
 
         let safeLimit = max(1, min(500, limit))
@@ -651,7 +655,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const params = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
             const rows = targetDb.terminal_session_events.find({ session_id: params.session_id }).sort({ event_at: -1, _id: -1 }).limit(params.limit).toArray();
@@ -674,8 +678,8 @@ actor PostgresMonitoringWriter {
         return rows.map { $0.makeEvent() }
     }
 
-    func fetchSessionChunks(sessionID: UUID, settings: PostgresMonitoringSettings, limit: Int) throws -> [TerminalTranscriptChunk] {
-        guard settings.enablePostgresWrites else { return [] }
+    func fetchSessionChunks(sessionID: UUID, settings: MongoMonitoringSettings, limit: Int) throws -> [TerminalTranscriptChunk] {
+        guard settings.enableMongoWrites else { return [] }
         try ensureSchema(settings: settings)
 
         let safeLimit = max(1, min(500, limit))
@@ -686,7 +690,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const params = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
             const rows = targetDb.terminal_chunks.find({ session_id: params.session_id }).sort({ chunk_index: -1 }).limit(params.limit).toArray();
@@ -710,13 +714,13 @@ actor PostgresMonitoringWriter {
         return rows.map { $0.makeChunk() }
     }
 
-    func fetchStorageSummary(settings: PostgresMonitoringSettings) throws -> PostgresStorageSummary {
-        guard settings.enablePostgresWrites else { return PostgresStorageSummary() }
+    func fetchStorageSummary(settings: MongoMonitoringSettings) throws -> MongoStorageSummary {
+        guard settings.enableMongoWrites else { return MongoStorageSummary() }
         try ensureSchema(settings: settings)
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const targetDb = db.getSiblingDB(cfg.cfg);
 
             const sessionCount = targetDb.terminal_sessions.countDocuments({});
@@ -759,15 +763,15 @@ actor PostgresMonitoringWriter {
         let output = try runMongo(script, settings: settings)
         let rows = try parseMongoRows(output, as: DatabaseStorageSummaryRow.self)
         guard let row = rows.first else {
-            return PostgresStorageSummary()
+            return MongoStorageSummary()
         }
         return row.makeSummary()
     }
 
-    func pruneCompletedHistory(settings: PostgresMonitoringSettings, retentionDays: Int) throws -> PostgresPruneSummary {
+    func pruneCompletedHistory(settings: MongoMonitoringSettings, retentionDays: Int) throws -> MongoPruneSummary {
         let cutoffDate = Date().addingTimeInterval(-TimeInterval(max(1, retentionDays)) * 86_400)
-        guard settings.enablePostgresWrites else {
-            return PostgresPruneSummary(cutoffDate: cutoffDate)
+        guard settings.enableMongoWrites else {
+            return MongoPruneSummary(cutoffDate: cutoffDate)
         }
         try ensureSchema(settings: settings)
 
@@ -779,7 +783,7 @@ actor PostgresMonitoringWriter {
 
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const params = JSON.parse(\(mongoJSONLiteral(payload)));
             const targetDb = db.getSiblingDB(cfg.cfg);
 
@@ -812,22 +816,14 @@ actor PostgresMonitoringWriter {
                 const sessionDelete = targetDb.terminal_sessions.deleteMany({ session_id: { $in: doomedIds } });
                 const actualSessionCount = Number(sessionDelete.deletedCount || deletedSessionCount);
 
-                const result = {
-                    deleted_sessions: actualSessionCount,
-                    deleted_chunks: deletedChunkCount,
-                    deleted_events: deletedEventCount,
-                    deleted_chunk_bytes: deletedChunkBytes
-                };
-                print(EJSON.stringify(result));
-                return;
+                print(JSON.stringify({
+                    deletedSessions: actualSessionCount,
+                    deletedChunks: deletedChunkCount,
+                    deletedEvents: deletedEventCount
+                }));
+            } else {
+                print(JSON.stringify({ deletedSessions: 0, deletedChunks: 0, deletedEvents: 0 }));
             }
-
-            print(EJSON.stringify({
-                deleted_sessions: 0,
-                deleted_chunks: 0,
-                deleted_events: 0,
-                    deleted_chunk_bytes: 0
-            }));
         })();
         """
 
@@ -837,20 +833,30 @@ actor PostgresMonitoringWriter {
             .map(String.init)
             .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
         else {
-            return PostgresPruneSummary(cutoffDate: cutoffDate)
+            return MongoPruneSummary(cutoffDate: cutoffDate)
         }
 
-        let row = try parseMongoRows(line, as: DatabasePruneSummaryRow.self).first
-        return PostgresPruneSummary(
-            cutoffDate: cutoffDate,
-            deletedSessions: row?.deleted_sessions ?? 0,
-            deletedChunks: row?.deleted_chunks ?? 0,
-            deletedEvents: row?.deleted_events ?? 0,
-            deletedChunkBytes: row?.deleted_chunk_bytes ?? 0
-        )
+        return try JSONDecoder().decode(MongoPruneSummary.self, from: Data(line.utf8))
     }
 
-    private func runMongo(_ script: String, settings: PostgresMonitoringSettings) throws -> String {
+    func clearAllHistory(settings: MongoMonitoringSettings) throws {
+        guard settings.enableMongoWrites else { return }
+        try ensureSchema(settings: settings)
+
+        let script = """
+        (function() {
+            const dbName = \(mongoStringLiteral(mongoDatabaseName(from: settings)));
+            const targetDb = db.getSiblingDB(dbName);
+            targetDb.terminal_sessions.drop();
+            targetDb.terminal_chunks.drop();
+            targetDb.terminal_session_events.drop();
+            print("OK");
+        })();
+        """
+        _ = try runMongo(script, settings: settings)
+    }
+
+    private func runMongo(_ script: String, settings: MongoMonitoringSettings) throws -> String {
         let launch = try makeMongoLaunchConfiguration(settings: settings)
         do {
             return try executeMongoLaunch(launch: launch, script: script)
@@ -884,8 +890,8 @@ actor PostgresMonitoringWriter {
         return output
     }
 
-    private func shouldRetryMongoLaunch(for error: Error, settings: PostgresMonitoringSettings) -> Bool {
-        guard settings.enablePostgresWrites else { return false }
+    private func shouldRetryMongoLaunch(for error: Error, settings: MongoMonitoringSettings) -> Bool {
+        guard settings.enableMongoWrites else { return false }
         guard settings.mongoConnection.isLocal else { return false }
         let message = error.localizedDescription.lowercased()
         return message.contains("connection") && (
@@ -900,7 +906,7 @@ actor PostgresMonitoringWriter {
         )
     }
 
-    private func startLocalMongodIfNeeded(settings: PostgresMonitoringSettings) throws {
+    private func startLocalMongodIfNeeded(settings: MongoMonitoringSettings) throws {
         let port = mongoPort(from: settings.trimmedConnectionURL)
         guard let mongodPath = commandBuilder.resolvedExecutable(settings.mongodExecutable) else {
             throw LauncherError.validation("Local MongoDB monitoring is configured for \(settings.redactedConnectionDescription), but mongod was not found.")
@@ -941,7 +947,7 @@ actor PostgresMonitoringWriter {
         }
     }
 
-    private func isMongoReachable(settings: PostgresMonitoringSettings) -> Bool {
+    private func isMongoReachable(settings: MongoMonitoringSettings) -> Bool {
         let pingScript = """
         (function() {
             try {
@@ -972,10 +978,10 @@ actor PostgresMonitoringWriter {
         return false
     }
 
-    private func ensureSchemaScript(settings: PostgresMonitoringSettings) throws -> String {
+    private func ensureSchemaScript(settings: MongoMonitoringSettings) throws -> String {
         let script = """
         (function() {
-            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)]));
+            const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const targetDb = db.getSiblingDB(cfg.cfg);
             const collections = targetDb.listCollections().toArray().map((entry) => entry.name);
             if (!collections.includes("terminal_sessions")) {
@@ -998,8 +1004,8 @@ actor PostgresMonitoringWriter {
         return script
     }
 
-    private func makeMongoLaunchConfiguration(settings: PostgresMonitoringSettings) throws -> MongoLaunchConfiguration {
-        let executable = commandBuilder.resolvedExecutable(settings.psqlExecutable) ?? settings.psqlExecutable
+    private func makeMongoLaunchConfiguration(settings: MongoMonitoringSettings) throws -> MongoLaunchConfiguration {
+        let executable = commandBuilder.resolvedExecutable(settings.mongoshExecutable) ?? settings.mongoshExecutable
         guard !settings.trimmedConnectionURL.isEmpty else {
             throw LauncherError.validation("Mongo connection URL is empty.")
         }
@@ -1034,7 +1040,7 @@ actor PostgresMonitoringWriter {
         return port
     }
 
-    private func mongoDatabaseName(from settings: PostgresMonitoringSettings) -> String {
+    private func mongoDatabaseName(from settings: MongoMonitoringSettings) -> String {
         return mongoDatabaseName(from: settings.trimmedConnectionURL, fallback: settings.trimmedSchemaName)
     }
 
@@ -1118,22 +1124,32 @@ final class TerminalMonitorStore: ObservableObject {
     @Published var lastPruneSummary: String = ""
     @Published private(set) var sessionDetailsByID: [UUID: TerminalMonitorSessionDetails] = [:]
     @Published private(set) var detailLoadingSessionIDs: Set<UUID> = []
-    @Published private(set) var storageSummary: PostgresStorageSummary? = nil
-    @Published private(set) var lastPruneResult: PostgresPruneSummary? = nil
+    @Published private(set) var storageSummary: MongoStorageSummary? = nil
+    @Published private(set) var lastPruneResult: MongoPruneSummary? = nil
     @Published private(set) var isLoadingStorageSummary: Bool = false
     @Published private(set) var isPruningStoredHistory: Bool = false
+    @Published private(set) var isLoadingRecentSessions: Bool = false
+
+    private let minimumDetailRefreshInterval: TimeInterval = 1.5
+    private let minimumRecentSessionsRefreshInterval: TimeInterval = 1.2
+    private let minimumStorageSummaryRefreshInterval: TimeInterval = 1.8
+    private static let maxVisibleSessions = 200
 
     private var preparedContexts: [UUID: PreparedMonitoringContext] = [:]
     private var pollTasks: [UUID: Task<Void, Never>] = [:]
-    private let writer = PostgresMonitoringWriter()
+    private var nextDetailRefreshAt: [UUID: Date] = [:]
+    private var lastRecentSessionsRefreshAt: Date?
+    private var lastStorageSummaryRefreshAt: Date?
+    private var sessionIndexByID: [UUID: Int] = [:]
+    private let writer = MongoMonitoringWriter()
     private let diagnostics = MonitoringDiagnosticsService()
 
     func prepare(plan: PlannedLaunch, profiles: [LaunchProfile], settings: AppSettings, logger: LaunchLogger) throws -> PlannedLaunch {
-        guard settings.postgresMonitoring.enabled else {
+        guard settings.mongoMonitoring.enabled else {
             return plan
         }
 
-        let transcriptDirectory = settings.postgresMonitoring.expandedTranscriptDirectory
+        let transcriptDirectory = settings.mongoMonitoring.expandedTranscriptDirectory
         try FileManager.default.createDirectory(atPath: transcriptDirectory, withIntermediateDirectories: true, attributes: nil)
 
         var updatedPlan = plan
@@ -1143,19 +1159,19 @@ final class TerminalMonitorStore: ObservableObject {
             let item = updatedPlan.items[index]
             guard let profile = profileLookup[item.profileID] else { continue }
 
-            let context = try buildPreparedContext(item: item, profile: profile, settings: settings.postgresMonitoring)
+            let context = try buildPreparedContext(item: item, profile: profile, settings: settings.mongoMonitoring)
             preparedContexts[context.session.id] = context
             updatedPlan.items[index].command = context.wrappedCommand
             updatedPlan.items[index].monitorSessionID = context.session.id
         }
 
-        databaseStatus = settings.postgresMonitoring.enablePostgresWrites ? "Prepared \(updatedPlan.items.count) monitored launch(es)." : "Local transcript monitoring prepared."
+        databaseStatus = settings.mongoMonitoring.enableMongoWrites ? "Prepared \(updatedPlan.items.count) monitored launch(es)." : "Local transcript monitoring prepared."
         logger.log(.info, "Prepared \(updatedPlan.items.count) monitored iTerm2 launch(es).", category: .monitoring)
         return updatedPlan
     }
 
     func activatePreparedSessions(for plan: PlannedLaunch, settings: AppSettings, logger: LaunchLogger) {
-        guard settings.postgresMonitoring.enabled else { return }
+        guard settings.mongoMonitoring.enabled else { return }
 
         for item in plan.items {
             guard let sessionID = item.monitorSessionID,
@@ -1164,22 +1180,22 @@ final class TerminalMonitorStore: ObservableObject {
 
             var session = context.session
             session.status = .launching
-            session.lastDatabaseMessage = settings.postgresMonitoring.enablePostgresWrites ? "Awaiting first MongoDB sync." : "Local transcript capture started."
+            session.lastDatabaseMessage = settings.mongoMonitoring.enableMongoWrites ? "Awaiting first MongoDB sync." : "Local transcript capture started."
             upsert(session)
 
-            if settings.postgresMonitoring.enablePostgresWrites {
+            if settings.mongoMonitoring.enableMongoWrites {
                 Task {
                     do {
-                        try await writer.ensureSchema(settings: settings.postgresMonitoring)
-                        try await writer.recordSessionStart(session, settings: settings.postgresMonitoring)
+                        try await writer.ensureSchema(settings: settings.mongoMonitoring)
+                        try await writer.recordSessionStart(session, settings: settings.mongoMonitoring)
                         await MainActor.run {
                             self.databaseStatus = "MongoDB session logging active."
                             self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
                         }
                     } catch {
                         await MainActor.run {
-                            if let index = self.sessions.firstIndex(where: { $0.id == session.id }) {
-                            self.sessions[index].lastDatabaseMessage = "MongoDB unavailable: \(error.localizedDescription)"
+                            if let index = self.sessionIndex(for: session.id) {
+                                self.sessions[index].lastDatabaseMessage = "MongoDB unavailable: \(error.localizedDescription)"
                             }
                             self.databaseStatus = "MongoDB write error"
                             logger.log(.warning, "MongoDB monitor setup failed; local transcript capture is still running: \(error.localizedDescription)", category: .monitoring)
@@ -1188,7 +1204,7 @@ final class TerminalMonitorStore: ObservableObject {
                 }
             }
 
-            startPolling(context: context, settings: settings.postgresMonitoring)
+            startPolling(context: context, settings: settings.mongoMonitoring)
         }
     }
 
@@ -1198,7 +1214,7 @@ final class TerminalMonitorStore: ObservableObject {
             let context = preparedContexts.removeValue(forKey: sessionID)
             stopPolling(sessionID: sessionID)
 
-            var cancelled = sessions.first(where: { $0.id == sessionID }) ?? TerminalMonitorSession(
+            var cancelled = session(for: sessionID) ?? TerminalMonitorSession(
                 id: sessionID,
                 profileID: item.profileID,
                 profileName: item.profileName,
@@ -1206,16 +1222,16 @@ final class TerminalMonitorStore: ObservableObject {
                 workingDirectory: "",
                 transcriptPath: context?.session.transcriptPath ?? "",
                 launchCommand: item.command,
-                captureMode: settings.postgresMonitoring.captureMode
+                captureMode: settings.mongoMonitoring.captureMode
             )
             cancelled.status = .failed
             cancelled.endedAt = Date()
             cancelled.lastError = reason
             cancelled.statusReason = "launch_cancelled"
-            cancelled.lastDatabaseMessage = settings.postgresMonitoring.enablePostgresWrites ? "Launch failed before monitoring could start." : "Launch failed before monitoring could start."
+            cancelled.lastDatabaseMessage = settings.mongoMonitoring.enableMongoWrites ? "Launch failed before monitoring could start." : "Launch failed before monitoring could start."
             upsert(cancelled)
 
-            if settings.postgresMonitoring.enablePostgresWrites {
+            if settings.mongoMonitoring.enableMongoWrites {
                 Task {
                     try? await writer.recordStatus(
                         sessionID: sessionID,
@@ -1226,7 +1242,7 @@ final class TerminalMonitorStore: ObservableObject {
                         endedAt: Date(),
                         statusReason: "launch_cancelled",
                         exitCode: nil,
-                        settings: settings.postgresMonitoring
+                        settings: settings.mongoMonitoring
                     )
                 }
             }
@@ -1242,29 +1258,34 @@ final class TerminalMonitorStore: ObservableObject {
         for id in removedIDs {
             sessionDetailsByID.removeValue(forKey: id)
             detailLoadingSessionIDs.remove(id)
+            nextDetailRefreshAt.removeValue(forKey: id)
+            sessionIndexByID.removeValue(forKey: id)
         }
+
+        rebuildSessionIndex()
     }
 
     func revealTranscriptDirectory(settings: AppSettings) {
-        let path = settings.postgresMonitoring.expandedTranscriptDirectory
+        let path = settings.mongoMonitoring.expandedTranscriptDirectory
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     func testConnection(settings: AppSettings, logger: LaunchLogger) {
-        guard settings.postgresMonitoring.enabled else {
+        guard settings.mongoMonitoring.enabled else {
             databaseStatus = "Monitoring disabled"
             logger.log(.warning, "Enable terminal monitoring before testing MongoDB connectivity.", category: .monitoring)
             return
         }
-        guard settings.postgresMonitoring.enablePostgresWrites else {
+        guard settings.mongoMonitoring.enableMongoWrites else {
             databaseStatus = "Local transcript monitoring only"
             logger.log(.info, "MongoDB writes are disabled; local transcript monitoring is still available.", category: .monitoring)
             return
         }
 
+        databaseStatus = "Testing connection..."
         Task {
             do {
-                let result = try await writer.testConnection(settings: settings.postgresMonitoring)
+                let result = try await writer.testConnection(settings: settings.mongoMonitoring)
                 await MainActor.run {
                     self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
                     self.databaseStatus = "Connected • \(result)"
@@ -1272,56 +1293,84 @@ final class TerminalMonitorStore: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self.databaseStatus = "Connection failed"
+                    self.databaseStatus = "Connection failed: \(error.localizedDescription)"
                     logger.log(.error, "MongoDB monitoring connection failed: \(error.localizedDescription)", category: .monitoring)
                 }
             }
         }
     }
 
-    func refreshRecentSessions(settings: AppSettings, logger: LaunchLogger) {
-        guard settings.postgresMonitoring.enabled else {
+    func refreshRecentSessions(settings: AppSettings, logger: LaunchLogger, force: Bool = false) {
+        guard settings.mongoMonitoring.enabled else {
             databaseStatus = "Monitoring disabled"
             storageSummary = nil
             storageSummaryStatus = ""
+            isLoadingRecentSessions = false
             return
         }
-        guard settings.postgresMonitoring.enablePostgresWrites else {
+        guard settings.mongoMonitoring.enableMongoWrites else {
             databaseStatus = "Local transcript monitoring only"
+            isLoadingRecentSessions = false
             return
+        }
+        let now = Date()
+        if !force {
+            if isLoadingRecentSessions {
+                return
+            }
+            if let lastRefresh = lastRecentSessionsRefreshAt,
+               now.timeIntervalSince(lastRefresh) < minimumRecentSessionsRefreshInterval {
+                return
+            }
         }
 
+        isLoadingRecentSessions = true
         Task {
             do {
                 let databaseSessions = try await writer.fetchRecentSessions(
-                    settings: settings.postgresMonitoring,
-                    limit: settings.postgresMonitoring.clampedRecentHistoryLimit,
-                    lookbackHours: settings.postgresMonitoring.clampedRecentHistoryLookbackDays * 24
+                    settings: settings.mongoMonitoring,
+                    limit: settings.mongoMonitoring.clampedRecentHistoryLimit,
+                    lookbackHours: settings.mongoMonitoring.clampedRecentHistoryLookbackDays * 24
                 )
                 await MainActor.run {
                     self.synchronizeHistoricalSessions(databaseSessions)
                     self.lastConnectionCheck = Date().formatted(date: .abbreviated, time: .standard)
                     self.databaseStatus = "Loaded \(databaseSessions.count) recent session(s) from MongoDB."
                     logger.log(.success, "Loaded \(databaseSessions.count) recent monitored session(s) from MongoDB.", category: .monitoring)
+                    self.lastRecentSessionsRefreshAt = now
+                    self.isLoadingRecentSessions = false
                 }
             } catch {
                 await MainActor.run {
                     self.databaseStatus = "Recent session refresh failed"
                     logger.log(.error, "Failed to load recent MongoDB-backed sessions: \(error.localizedDescription)", category: .monitoring)
+                    self.lastRecentSessionsRefreshAt = now
+                    self.isLoadingRecentSessions = false
                 }
             }
         }
     }
 
-    func refreshStorageSummary(settings: AppSettings, logger: LaunchLogger) {
-        guard settings.postgresMonitoring.enabled else {
+    func refreshStorageSummary(settings: AppSettings, logger: LaunchLogger, force: Bool = false) {
+        guard settings.mongoMonitoring.enabled else {
             storageSummary = nil
             storageSummaryStatus = ""
+            isLoadingStorageSummary = false
             return
+        }
+        let now = Date()
+        if !force {
+            if isLoadingStorageSummary {
+                return
+            }
+            if let lastRefresh = lastStorageSummaryRefreshAt,
+               now.timeIntervalSince(lastRefresh) < minimumStorageSummaryRefreshInterval {
+                return
+            }
         }
 
         isLoadingStorageSummary = true
-        let monitoringSettings = settings.postgresMonitoring
+        let monitoringSettings = settings.mongoMonitoring
 
         Task { [weak self] in
             guard let self else { return }
@@ -1329,7 +1378,7 @@ final class TerminalMonitorStore: ObservableObject {
             var summary = Self.scanTranscriptDirectory(at: monitoringSettings.expandedTranscriptDirectory)
             var notes: [String] = []
 
-            if monitoringSettings.enablePostgresWrites {
+            if monitoringSettings.enableMongoWrites {
                 do {
                     let databaseSummary = try await writer.fetchStorageSummary(settings: monitoringSettings)
                     summary.sessionCount = databaseSummary.sessionCount
@@ -1363,31 +1412,72 @@ final class TerminalMonitorStore: ObservableObject {
                 self.storageSummary = summary
                 self.storageSummaryStatus = notes.joined(separator: " ")
                 self.isLoadingStorageSummary = false
+                self.lastStorageSummaryRefreshAt = now
             }
         }
     }
 
-    func pruneStoredHistory(settings: AppSettings, logger: LaunchLogger) {
-        guard settings.postgresMonitoring.enabled else {
+    func clearStoredHistory(settings: AppSettings, logger: LaunchLogger) {
+        guard settings.mongoMonitoring.enabled else {
             lastPruneSummary = "Monitoring is disabled."
             return
         }
         guard !isPruningStoredHistory else { return }
 
         isPruningStoredHistory = true
-        let monitoringSettings = settings.postgresMonitoring
+        let monitoringSettings = settings.mongoMonitoring
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            var notes: [String] = []
+            if monitoringSettings.enableMongoWrites {
+                do {
+                    try await writer.clearAllHistory(settings: monitoringSettings)
+                    notes.append("Cleared all MongoDB session history.")
+                } catch {
+                    notes.append("MongoDB clear failed: \(error.localizedDescription)")
+                    logger.log(.error, "Failed to clear MongoDB history: \(error.localizedDescription)", category: .monitoring)
+                }
+            }
+
+            let localPrune = Self.pruneTranscriptDirectory(
+                at: monitoringSettings.expandedTranscriptDirectory,
+                olderThanDays: 0,
+                protectedPaths: []
+            )
+            notes.append("Cleared all local transcript files: \(localPrune.deletedFileCount) files.")
+
+            await MainActor.run {
+                self.isPruningStoredHistory = false
+                self.refreshRecentSessions(settings: settings, logger: logger, force: true)
+                self.refreshStorageSummary(settings: settings, logger: logger, force: true)
+                logger.log(.success, notes.joined(separator: " "), category: .monitoring)
+            }
+        }
+    }
+
+    func pruneStoredHistory(settings: AppSettings, logger: LaunchLogger) {
+        guard settings.mongoMonitoring.enabled else {
+            lastPruneSummary = "Monitoring is disabled."
+            return
+        }
+        guard !isPruningStoredHistory else { return }
+
+        isPruningStoredHistory = true
+        let monitoringSettings = settings.mongoMonitoring
         let databaseRetentionDays = monitoringSettings.clampedDatabaseRetentionDays
         let localRetentionDays = monitoringSettings.clampedLocalTranscriptRetentionDays
 
         Task { [weak self] in
             guard let self else { return }
 
-            var pruneSummary = PostgresPruneSummary(
+            var pruneSummary = MongoPruneSummary(
                 cutoffDate: Date().addingTimeInterval(-TimeInterval(databaseRetentionDays) * 86_400)
             )
             var notes: [String] = []
 
-            if monitoringSettings.enablePostgresWrites {
+            if monitoringSettings.enableMongoWrites {
                 do {
                     pruneSummary = try await writer.pruneCompletedHistory(
                         settings: monitoringSettings,
@@ -1421,21 +1511,21 @@ final class TerminalMonitorStore: ObservableObject {
             await MainActor.run {
                 self.lastPruneResult = pruneSummary
                 self.lastPruneSummary = Self.describe(pruneSummary: pruneSummary)
-                self.databaseStatus = monitoringSettings.enablePostgresWrites
+                self.databaseStatus = monitoringSettings.enableMongoWrites
                     ? "Stored monitoring history pruned."
                     : "Local transcript history pruned."
                 self.isPruningStoredHistory = false
-                if monitoringSettings.enablePostgresWrites {
-                    self.refreshRecentSessions(settings: settings, logger: logger)
+                if monitoringSettings.enableMongoWrites {
+                    self.refreshRecentSessions(settings: settings, logger: logger, force: true)
                 }
-                self.refreshStorageSummary(settings: settings, logger: logger)
+                self.refreshStorageSummary(settings: settings, logger: logger, force: true)
                 logger.log(logLevel, notes.joined(separator: " "), category: .monitoring)
             }
         }
     }
 
     func statuses(for settings: AppSettings) -> [ToolStatus] {
-        diagnostics.inspect(settings: settings.postgresMonitoring)
+        diagnostics.inspect(settings: settings.mongoMonitoring)
     }
 
     func details(for sessionID: UUID) -> TerminalMonitorSessionDetails? {
@@ -1447,11 +1537,22 @@ final class TerminalMonitorStore: ObservableObject {
     }
 
     func loadDetails(for session: TerminalMonitorSession, settings: AppSettings, logger: LaunchLogger, forceRefresh: Bool = false) {
+        let now = Date()
         if detailLoadingSessionIDs.contains(session.id) {
             return
         }
-        if !forceRefresh, let cached = sessionDetailsByID[session.id], cached.matches(session) {
+
+        if !forceRefresh, let nextRefresh = nextDetailRefreshAt[session.id], nextRefresh > now {
             return
+        }
+
+        if !forceRefresh, let cached = sessionDetailsByID[session.id], cached.matches(session) {
+            nextDetailRefreshAt[session.id] = now.addingTimeInterval(minimumDetailRefreshInterval)
+            return
+        }
+
+        if !forceRefresh {
+            nextDetailRefreshAt[session.id] = now.addingTimeInterval(minimumDetailRefreshInterval)
         }
 
         detailLoadingSessionIDs.insert(session.id)
@@ -1470,7 +1571,7 @@ final class TerminalMonitorStore: ObservableObject {
                 do {
                     let snapshot = try Self.readTranscriptPreview(
                         at: session.transcriptPath,
-                        maxBytes: settings.postgresMonitoring.clampedTranscriptPreviewByteLimit
+                        maxBytes: settings.mongoMonitoring.clampedTranscriptPreviewByteLimit
                     )
                     transcriptText = snapshot.text
                     transcriptSource = snapshot.sourceDescription
@@ -1483,17 +1584,17 @@ final class TerminalMonitorStore: ObservableObject {
                 loadNotes.append("No local transcript file was found.")
             }
 
-            if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites {
+            if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites {
                 do {
                     async let fetchedEvents = writer.fetchSessionEvents(
                         sessionID: session.id,
-                        settings: settings.postgresMonitoring,
-                        limit: settings.postgresMonitoring.clampedDetailEventLimit
+                        settings: settings.mongoMonitoring,
+                        limit: settings.mongoMonitoring.clampedDetailEventLimit
                     )
                     async let fetchedChunks = writer.fetchSessionChunks(
                         sessionID: session.id,
-                        settings: settings.postgresMonitoring,
-                        limit: settings.postgresMonitoring.clampedDetailChunkLimit
+                        settings: settings.mongoMonitoring,
+                        limit: settings.mongoMonitoring.clampedDetailChunkLimit
                     )
                     events = try await fetchedEvents
                     chunks = try await fetchedChunks
@@ -1532,7 +1633,7 @@ final class TerminalMonitorStore: ObservableObject {
                 transcriptTruncated: transcriptTruncated,
                 events: events,
                 chunks: chunks,
-                eventsTruncated: events.count >= settings.postgresMonitoring.clampedDetailEventLimit,
+                eventsTruncated: events.count >= settings.mongoMonitoring.clampedDetailEventLimit,
                 chunksTruncated: session.chunkCount > chunks.count,
                 loadSummary: loadNotes.isEmpty ? "Session details loaded." : loadNotes.joined(separator: " ")
             )
@@ -1544,7 +1645,7 @@ final class TerminalMonitorStore: ObservableObject {
         }
     }
 
-    private func buildPreparedContext(item: PlannedLaunchItem, profile: LaunchProfile, settings: PostgresMonitoringSettings) throws -> PreparedMonitoringContext {
+    private func buildPreparedContext(item: PlannedLaunchItem, profile: LaunchProfile, settings: MongoMonitoringSettings) throws -> PreparedMonitoringContext {
         let transcriptDirectory = settings.expandedTranscriptDirectory
         try FileManager.default.createDirectory(atPath: transcriptDirectory, withIntermediateDirectories: true, attributes: nil)
 
@@ -1571,7 +1672,7 @@ final class TerminalMonitorStore: ObservableObject {
             byteCount: 0,
             status: .prepared,
             lastPreview: "",
-            lastDatabaseMessage: settings.enablePostgresWrites ? "Session prepared for MongoDB tracking." : "Local transcript capture only.",
+            lastDatabaseMessage: settings.enableMongoWrites ? "Session prepared for MongoDB tracking." : "Local transcript capture only.",
             lastError: nil,
             statusReason: nil,
             exitCode: nil,
@@ -1580,7 +1681,7 @@ final class TerminalMonitorStore: ObservableObject {
         return PreparedMonitoringContext(session: session, wrappedCommand: wrappedCommand, completionMarkerPath: completionMarkerPath)
     }
 
-    private func wrapCommand(_ originalCommand: String, transcriptPath: String, completionMarkerPath: String, settings: PostgresMonitoringSettings) throws -> String {
+    private func wrapCommand(_ originalCommand: String, transcriptPath: String, completionMarkerPath: String, settings: MongoMonitoringSettings) throws -> String {
         let builder = CommandBuilder()
         let scriptExecutable = builder.resolvedExecutable(settings.scriptExecutable) ?? settings.scriptExecutable
         let transcriptDirectory = URL(fileURLWithPath: transcriptPath).deletingLastPathComponent().path
@@ -1588,32 +1689,47 @@ final class TerminalMonitorStore: ObservableObject {
         return "mkdir -p \(shellQuote(transcriptDirectory)) && \(shellQuote(scriptExecutable)) -q \(keyFlag)-t 0 \(shellQuote(transcriptPath)) /bin/sh -lc \(shellQuote(originalCommand)); __launcher_exit_code=$?; /usr/bin/printf 'exit_code=%s\\nended_at=%s\\nreason=%s\\n' \"$__launcher_exit_code\" \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"command_finished\" > \(shellQuote(completionMarkerPath)); exit $__launcher_exit_code"
     }
 
-    private func startPolling(context: PreparedMonitoringContext, settings: PostgresMonitoringSettings) {
+    private func startPolling(context: PreparedMonitoringContext, settings: MongoMonitoringSettings) {
         let sessionID = context.session.id
         stopPolling(sessionID: sessionID)
 
         pollTasks[sessionID] = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            let pollingDelay = UInt64(max(250, settings.pollingIntervalMs)) * 1_000_000
+            let basePollingDelay = UInt64(max(250, settings.pollingIntervalMs)) * 1_000_000
+            let maxPollingDelay = UInt64(5_000_000_000)
             let chunkByteLimit = 12_000
             let idleThreshold: TimeInterval = 120
             let transcriptGraceDeadline = Date().addingTimeInterval(20)
+            let transcriptPath = context.session.transcriptPath
             var offset: UInt64 = 0
             var chunkIndex = 0
             var lastObservedWrite = Date()
+            var pollingDelay = basePollingDelay
+            var transcriptHandle: FileHandle?
+            defer { try? transcriptHandle?.close() }
 
             while !Task.isCancelled {
                 do {
-                    let attributes = try FileManager.default.attributesOfItem(atPath: context.session.transcriptPath)
-                    let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+                    if transcriptHandle == nil {
+                        transcriptHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: transcriptPath))
+                        offset = 0
+                    }
 
-                    if size > offset {
-                        let data = try Self.readAppendedData(at: context.session.transcriptPath, offset: offset)
-                        offset = size
-                        let slices = stride(from: 0, to: data.count, by: chunkByteLimit).map {
-                            data.subdata(in: $0..<min($0 + chunkByteLimit, data.count))
-                        }
-                        for slice in slices where !slice.isEmpty {
+                    let endOffset = try transcriptHandle!.seekToEnd()
+                    if endOffset < offset {
+                        offset = 0
+                    }
+
+                    let hasNewData = endOffset > offset
+                    if hasNewData {
+                        pollingDelay = basePollingDelay
+                        try transcriptHandle!.seek(toOffset: offset)
+                        let data = try transcriptHandle!.readToEnd() ?? Data()
+                        offset = endOffset
+                        var sliceStart = 0
+                        while sliceStart < data.count {
+                            let sliceEnd = min(sliceStart + chunkByteLimit, data.count)
+                            let slice = data.subdata(in: sliceStart..<sliceEnd)
                             chunkIndex += 1
                             lastObservedWrite = Date()
                             let preview = Self.cleanedPreview(from: slice, limit: settings.previewCharacterLimit)
@@ -1625,6 +1741,7 @@ final class TerminalMonitorStore: ObservableObject {
                                 timestamp: lastObservedWrite,
                                 settings: settings
                             )
+                            sliceStart = sliceEnd
                         }
                     }
 
@@ -1638,12 +1755,22 @@ final class TerminalMonitorStore: ObservableObject {
                         return
                     }
 
-                    if size > 0, Date().timeIntervalSince(lastObservedWrite) > idleThreshold {
+                    if endOffset > 0, Date().timeIntervalSince(lastObservedWrite) > idleThreshold {
                         await self.markIdleIfNeeded(sessionID: sessionID, at: lastObservedWrite, settings: settings)
                     }
+
+                    if !hasNewData {
+                        pollingDelay = min(maxPollingDelay, pollingDelay * 2)
+                    }
                 } catch {
+                    if let handle = transcriptHandle {
+                        try? handle.close()
+                    }
+                    transcriptHandle = nil
+
                     if Self.isMissingFileError(error), Date() < transcriptGraceDeadline {
                         // The wrapped script process may not have created the transcript file yet.
+                        pollingDelay = min(maxPollingDelay, pollingDelay * 2)
                     } else {
                         await self.markMonitoringFailure(
                             sessionID: sessionID,
@@ -1671,21 +1798,22 @@ final class TerminalMonitorStore: ObservableObject {
         preview: String,
         chunkIndex: Int,
         timestamp: Date,
-        settings: PostgresMonitoringSettings
+        settings: MongoMonitoringSettings
     ) async {
-        guard var session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let index = sessionIndex(for: sessionID) else { return }
+        var session = sessions[index]
 
         session.status = .monitoring
         session.lastActivityAt = timestamp
         session.chunkCount += 1
         session.byteCount += data.count
         session.lastPreview = preview
-        session.lastDatabaseMessage = settings.enablePostgresWrites ? "Chunk \(session.chunkCount) queued for MongoDB." : "Chunk \(session.chunkCount) captured locally."
+        session.lastDatabaseMessage = settings.enableMongoWrites ? "Chunk \(session.chunkCount) queued for MongoDB." : "Chunk \(session.chunkCount) captured locally."
         session.lastError = nil
         session.statusReason = nil
         upsert(session)
 
-        guard settings.enablePostgresWrites else { return }
+        guard settings.enableMongoWrites else { return }
 
         do {
             try await writer.recordChunk(
@@ -1699,28 +1827,28 @@ final class TerminalMonitorStore: ObservableObject {
                 status: .monitoring,
                 settings: settings
             )
-            if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if let index = sessionIndex(for: sessionID) {
                 sessions[index].lastDatabaseMessage = "Synced chunk \(sessions[index].chunkCount) to MongoDB."
             }
         } catch {
-            if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if let index = sessionIndex(for: sessionID) {
                 sessions[index].lastDatabaseMessage = "MongoDB sync failed: \(error.localizedDescription)"
             }
             databaseStatus = "MongoDB write failed"
         }
     }
 
-    private func markIdleIfNeeded(sessionID: UUID, at timestamp: Date, settings: PostgresMonitoringSettings) async {
-        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+    private func markIdleIfNeeded(sessionID: UUID, at timestamp: Date, settings: MongoMonitoringSettings) async {
+        guard let index = sessionIndex(for: sessionID) else { return }
         guard sessions[index].status != .idle else { return }
 
         sessions[index].status = .idle
         sessions[index].lastActivityAt = timestamp
-        sessions[index].lastDatabaseMessage = settings.enablePostgresWrites ? "Waiting for additional terminal output." : "No new terminal output detected yet."
+        sessions[index].lastDatabaseMessage = settings.enableMongoWrites ? "Waiting for additional terminal output." : "No new terminal output detected yet."
         let idleSession = sessions[index]
         upsert(idleSession)
 
-        guard settings.enablePostgresWrites else { return }
+        guard settings.enableMongoWrites else { return }
         do {
             try await writer.recordStatus(
                 sessionID: sessionID,
@@ -1734,7 +1862,7 @@ final class TerminalMonitorStore: ObservableObject {
                 settings: settings
             )
         } catch {
-            if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if let refreshedIndex = sessionIndex(for: sessionID) {
                 sessions[refreshedIndex].lastDatabaseMessage = "MongoDB idle-state sync failed: \(error.localizedDescription)"
             }
             databaseStatus = "MongoDB write failed"
@@ -1745,9 +1873,9 @@ final class TerminalMonitorStore: ObservableObject {
         sessionID: UUID,
         completion: SessionCompletionMarker,
         completionMarkerPath: String,
-        settings: PostgresMonitoringSettings
+        settings: MongoMonitoringSettings
     ) async {
-        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else {
+        guard let index = sessionIndex(for: sessionID) else {
             stopPolling(sessionID: sessionID)
             try? FileManager.default.removeItem(atPath: completionMarkerPath)
             return
@@ -1760,7 +1888,7 @@ final class TerminalMonitorStore: ObservableObject {
         sessions[index].exitCode = completion.exitCode
         sessions[index].statusReason = completion.reason
         sessions[index].lastError = completedSuccessfully ? nil : "Process exited with code \(completion.exitCode)."
-        sessions[index].lastDatabaseMessage = settings.enablePostgresWrites
+        sessions[index].lastDatabaseMessage = settings.enableMongoWrites
                 ? (completedSuccessfully ? "Session completed and synced to MongoDB." : "Session exited non-zero and was recorded in MongoDB.")
             : (completedSuccessfully ? "Session completed locally." : "Session exited non-zero.")
 
@@ -1769,11 +1897,11 @@ final class TerminalMonitorStore: ObservableObject {
         stopPolling(sessionID: sessionID)
         try? FileManager.default.removeItem(atPath: completionMarkerPath)
 
-        if settings.enablePostgresWrites {
+        if settings.enableMongoWrites {
             do {
                 try await writer.recordCompletion(session: finalSession, settings: settings)
             } catch {
-                if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
+                if let refreshedIndex = sessionIndex(for: sessionID) {
                     sessions[refreshedIndex].lastDatabaseMessage = "MongoDB completion sync failed: \(error.localizedDescription)"
                 }
                 databaseStatus = "MongoDB write failed"
@@ -1789,9 +1917,9 @@ final class TerminalMonitorStore: ObservableObject {
         sessionID: UUID,
         message: String,
         completionMarkerPath: String,
-        settings: PostgresMonitoringSettings
+        settings: MongoMonitoringSettings
     ) async {
-        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else {
+        guard let index = sessionIndex(for: sessionID) else {
             stopPolling(sessionID: sessionID)
             try? FileManager.default.removeItem(atPath: completionMarkerPath)
             return
@@ -1801,17 +1929,17 @@ final class TerminalMonitorStore: ObservableObject {
         sessions[index].endedAt = Date()
         sessions[index].lastError = message
         sessions[index].statusReason = "monitoring_error"
-        sessions[index].lastDatabaseMessage = settings.enablePostgresWrites ? "Monitoring failed before session data could be fully synchronized." : "Monitoring failed locally."
+        sessions[index].lastDatabaseMessage = settings.enableMongoWrites ? "Monitoring failed before session data could be fully synchronized." : "Monitoring failed locally."
         let failedSession = sessions[index]
         upsert(failedSession)
         stopPolling(sessionID: sessionID)
         try? FileManager.default.removeItem(atPath: completionMarkerPath)
 
-        guard settings.enablePostgresWrites else { return }
+        guard settings.enableMongoWrites else { return }
         do {
             try await writer.recordFailure(sessionID: sessionID, message: message, status: .failed, settings: settings)
         } catch {
-            if let refreshedIndex = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if let refreshedIndex = sessionIndex(for: sessionID) {
                 sessions[refreshedIndex].lastDatabaseMessage = "MongoDB failure sync failed: \(error.localizedDescription)"
             }
             databaseStatus = "MongoDB write failed"
@@ -1819,54 +1947,120 @@ final class TerminalMonitorStore: ObservableObject {
     }
 
     private func synchronizeHistoricalSessions(_ databaseSessions: [TerminalMonitorSession]) {
-        let staleHistoricalIDs = Set(sessions.filter(\.isHistorical).map(\.id)).subtracting(databaseSessions.map(\.id))
+        let databaseSessionIDs = Set(databaseSessions.map(\.id))
+        let staleHistoricalIDs = Set(sessions.filter(\.isHistorical).map(\.id)).subtracting(databaseSessionIDs)
         var liveSessions = sessions.filter { !$0.isHistorical }
+        var liveSessionIndexByID: [UUID: Int] = [:]
+        liveSessionIndexByID.reserveCapacity(liveSessions.count)
+        for index in liveSessions.indices {
+            liveSessionIndexByID[liveSessions[index].id] = index
+        }
 
         for session in databaseSessions {
-            if let index = liveSessions.firstIndex(where: { $0.id == session.id }) {
-                liveSessions[index].endedAt = session.endedAt ?? liveSessions[index].endedAt
-                liveSessions[index].statusReason = session.statusReason ?? liveSessions[index].statusReason
-                liveSessions[index].exitCode = session.exitCode ?? liveSessions[index].exitCode
-                if liveSessions[index].lastPreview.isEmpty {
-                    liveSessions[index].lastPreview = session.lastPreview
+            if let index = liveSessionIndexByID[session.id] {
+                var merged = liveSessions[index]
+                merged.endedAt = session.endedAt ?? merged.endedAt
+                merged.statusReason = session.statusReason ?? merged.statusReason
+                merged.exitCode = session.exitCode ?? merged.exitCode
+                merged.lastActivityAt = max(merged.lastActivityAt ?? .distantPast, session.lastActivityAt ?? .distantPast)
+                if merged.lastPreview.isEmpty {
+                    merged.lastPreview = session.lastPreview
                 }
-                if liveSessions[index].lastDatabaseMessage.isEmpty || liveSessions[index].lastDatabaseMessage.contains("failed") {
-                    liveSessions[index].lastDatabaseMessage = session.lastDatabaseMessage
+                if merged.lastDatabaseMessage.isEmpty || merged.lastDatabaseMessage.contains("failed") {
+                    merged.lastDatabaseMessage = session.lastDatabaseMessage
                 }
+                liveSessions[index] = merged
             } else {
                 liveSessions.append(session)
+                liveSessionIndexByID[session.id] = liveSessions.count - 1
             }
         }
 
         for id in staleHistoricalIDs {
             sessionDetailsByID.removeValue(forKey: id)
             detailLoadingSessionIDs.remove(id)
+            nextDetailRefreshAt.removeValue(forKey: id)
         }
 
         sessions = liveSessions
-        sessions.sort { ($0.lastActivityAt ?? $0.endedAt ?? $0.startedAt) > ($1.lastActivityAt ?? $1.endedAt ?? $1.startedAt) }
-        if sessions.count > 200 {
-            sessions = Array(sessions.prefix(200))
+        if sessions.count > Self.maxVisibleSessions {
+            let discardedSessions = sessions.dropFirst(Self.maxVisibleSessions)
+            for staleSession in discardedSessions {
+                sessionDetailsByID.removeValue(forKey: staleSession.id)
+                detailLoadingSessionIDs.remove(staleSession.id)
+                nextDetailRefreshAt.removeValue(forKey: staleSession.id)
+            }
+            sessions = Array(sessions.prefix(Self.maxVisibleSessions))
         }
+        rebuildSessionIndex()
     }
 
     private func upsert(_ session: TerminalMonitorSession) {
-        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+        if let index = sessionIndex(for: session.id) {
             sessions[index] = session
+            let currentDate = Self.sessionActivityDate(session)
+            var adjustedIndex = index
+
+            while adjustedIndex > 0 && currentDate > Self.sessionActivityDate(sessions[adjustedIndex - 1]) {
+                swapSessions(at: adjustedIndex, and: adjustedIndex - 1)
+                adjustedIndex -= 1
+            }
+
+            while adjustedIndex + 1 < sessions.count && currentDate < Self.sessionActivityDate(sessions[adjustedIndex + 1]) {
+                swapSessions(at: adjustedIndex, and: adjustedIndex + 1)
+                adjustedIndex += 1
+            }
         } else {
             sessions.insert(session, at: 0)
+            for index in sessions.indices {
+                sessionIndexByID[sessions[index].id] = index
+            }
+            if sessions.count > Self.maxVisibleSessions {
+                let removed = sessions.removeLast()
+                sessionIndexByID.removeValue(forKey: removed.id)
+                sessionDetailsByID.removeValue(forKey: removed.id)
+                detailLoadingSessionIDs.remove(removed.id)
+                nextDetailRefreshAt.removeValue(forKey: removed.id)
+            }
+            return
         }
-        sessions.sort { ($0.lastActivityAt ?? $0.endedAt ?? $0.startedAt) > ($1.lastActivityAt ?? $1.endedAt ?? $1.startedAt) }
-        if sessions.count > 200 {
-            sessions = Array(sessions.prefix(200))
+        if sessions.count > Self.maxVisibleSessions {
+            let removed = sessions.removeLast()
+            sessionIndexByID.removeValue(forKey: removed.id)
+            sessionDetailsByID.removeValue(forKey: removed.id)
+            detailLoadingSessionIDs.remove(removed.id)
+            nextDetailRefreshAt.removeValue(forKey: removed.id)
         }
     }
 
-    nonisolated private static func readAppendedData(at path: String, offset: UInt64) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
-        defer { try? handle.close() }
-        try handle.seek(toOffset: offset)
-        return try handle.readToEnd() ?? Data()
+    private func swapSessions(at firstIndex: Int, and secondIndex: Int) {
+        sessions.swapAt(firstIndex, secondIndex)
+        sessionIndexByID[sessions[firstIndex].id] = firstIndex
+        sessionIndexByID[sessions[secondIndex].id] = secondIndex
+    }
+
+    private func rebuildSessionIndex() {
+        sessionIndexByID.removeAll(keepingCapacity: true)
+        sessionIndexByID.reserveCapacity(sessions.count)
+
+        for index in sessions.indices {
+            sessionIndexByID[sessions[index].id] = index
+        }
+    }
+
+    private func session(for sessionID: UUID) -> TerminalMonitorSession? {
+        guard let index = sessionIndex(for: sessionID) else { return nil }
+        return sessions[index]
+    }
+
+    private func sessionIndex(for sessionID: UUID) -> Int? {
+        guard let index = sessionIndexByID[sessionID],
+              sessions.indices.contains(index),
+              sessions[index].id == sessionID
+        else {
+            return nil
+        }
+        return index
     }
 
     nonisolated private static func readTranscriptPreview(at path: String, maxBytes: Int) throws -> TranscriptPreviewSnapshot {
@@ -1909,9 +2103,9 @@ final class TerminalMonitorStore: ObservableObject {
         return protectedPaths
     }
 
-    nonisolated private static func scanTranscriptDirectory(at path: String) -> PostgresStorageSummary {
+    nonisolated private static func scanTranscriptDirectory(at path: String) -> MongoStorageSummary {
         let inventory = transcriptInventory(at: path)
-        return PostgresStorageSummary(
+        return MongoStorageSummary(
             transcriptFileCount: inventory.fileCount,
             transcriptFileBytes: inventory.totalBytes,
             oldestTranscriptFileAt: inventory.oldestFileAt,
@@ -2012,7 +2206,7 @@ final class TerminalMonitorStore: ObservableObject {
         fileURL.lastPathComponent.hasSuffix(".typescript.exit")
     }
 
-    nonisolated private static func describe(pruneSummary: PostgresPruneSummary) -> String {
+    nonisolated private static func describe(pruneSummary: MongoPruneSummary) -> String {
         let localBytes = ByteCountFormatter.string(fromByteCount: pruneSummary.deletedTranscriptBytes, countStyle: .file)
         let chunkBytes = ByteCountFormatter.string(fromByteCount: pruneSummary.deletedChunkBytes, countStyle: .file)
         return [
@@ -2024,13 +2218,20 @@ final class TerminalMonitorStore: ObservableObject {
 
     nonisolated private static func cleanedPreview(from data: Data, limit: Int) -> String {
         let raw = String(decoding: data, as: UTF8.self)
-        var cleaned = raw.replacingOccurrences(of: "\u{0000}", with: "")
-        cleaned = cleaned.unicodeScalars.map { scalar in
-            if CharacterSet.controlCharacters.contains(scalar), scalar != "\n" && scalar != "\t" {
-                return " "
+        var cleaned = String()
+        cleaned.reserveCapacity(raw.count)
+
+        for scalar in raw.unicodeScalars {
+            if scalar == "\u{0000}" {
+                continue
             }
-            return String(scalar)
-        }.joined()
+            if scalar.value < 0x20 && scalar != "\n" && scalar != "\r" && scalar != "\t" {
+                cleaned.append(" ")
+            } else {
+                cleaned.unicodeScalars.append(scalar)
+            }
+        }
+
         if cleaned.count > limit {
             let end = cleaned.index(cleaned.startIndex, offsetBy: min(limit, cleaned.count))
             return String(cleaned[..<end]) + "…"
@@ -2082,4 +2283,8 @@ final class TerminalMonitorStore: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter
     }()
+
+    private static func sessionActivityDate(_ session: TerminalMonitorSession) -> Date {
+        session.lastActivityAt ?? session.endedAt ?? session.startedAt
+    }
 }

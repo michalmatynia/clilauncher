@@ -3,6 +3,7 @@ import Foundation
 extension Notification.Name {
     static let refreshDiagnosticsRequested = Notification.Name("refreshDiagnosticsRequested")
     static let relaunchLastRequested = Notification.Name("relaunchLastRequested")
+    static let toggleAutomationRequested = Notification.Name("toggleAutomationRequested")
 }
 
 
@@ -67,6 +68,7 @@ enum AgentKind: String, CaseIterable, Codable, Identifiable {
     case claudeBypass
     case kiroCLI
     case ollamaLaunch
+    case aider
 
     var id: String { rawValue }
 
@@ -74,10 +76,11 @@ enum AgentKind: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .gemini: return "Gemini"
         case .copilot: return "GitHub Copilot"
-        case .codex: return "Codex"
-        case .claudeBypass: return "Claude Bypass"
+        case .codex: return "OpenAI Codex"
+        case .claudeBypass: return "Claude Code"
         case .kiroCLI: return "Kiro CLI"
         case .ollamaLaunch: return "Ollama Launch"
+        case .aider: return "Aider"
         }
     }
 
@@ -89,6 +92,23 @@ enum AgentKind: String, CaseIterable, Codable, Identifiable {
         case .claudeBypass: return "Claude Code in bypass mode for trusted workspaces."
         case .kiroCLI: return "Kiro CLI interactive or chat-resume workflows."
         case .ollamaLaunch: return "Ollama launch integrations for Claude Code or Codex."
+        case .aider: return "AI pair programming in your terminal."
+        }
+    }
+}
+
+enum AiderMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case code
+    case architect
+    case ask
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .code: return "Code"
+        case .architect: return "Architect"
+        case .ask: return "Ask"
         }
     }
 }
@@ -334,6 +354,41 @@ extension AgentKind {
                 installDocumentation: "https://ollama.com",
                 riskLevel: .low
             )
+        case .aider:
+            return ProviderDefinition(
+                kind: .aider,
+                quickLaunchTitle: "Aider",
+                defaultTemplateTitle: "Aider",
+                systemImage: "magicmouse.fill",
+                executableAliases: { _ in ["aider"] },
+                defaultProfileMutation: { profile in
+                    profile.name = "Aider Code"
+                    profile.aiderMode = .code
+                    profile.aiderExecutable = "aider"
+                    profile.aiderModel = ""
+                    profile.aiderAutoCommit = true
+                    profile.aiderNotify = false
+                    profile.aiderDarkTheme = true
+                },
+                normalizeMissingFields: { profile in
+                    if profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        profile.name = "Aider Code"
+                    }
+                    if profile.aiderExecutable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        profile.aiderExecutable = "aider"
+                    }
+                },
+                supportedModes: [AiderMode.code.rawValue, AiderMode.architect.rawValue, AiderMode.ask.rawValue],
+                description: { profile in
+                    "Aider • \(profile.aiderMode.displayName)"
+                },
+                defaultModel: { $0.aiderModel },
+                modelFlags: ["--model"],
+                configPaths: ["~/.aider.conf.yml", "~/.aider.model.settings.yml"],
+                envKeys: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"],
+                installDocumentation: "https://aider.chat",
+                riskLevel: .medium
+            )
         }
     }
 
@@ -361,6 +416,8 @@ extension AgentKind {
             return ["Claude Bypass skips permission prompts. Use only in trusted workspaces."]
         case .ollamaLaunch:
             return ["Ollama Launch requires an installed Ollama binary and a valid integration."]
+        case .aider:
+            return profile.aiderAutoCommit ? [] : ["Aider is configured without auto-commit. You will need to commit changes manually."]
         default:
             return []
         }
@@ -444,7 +501,7 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-enum GeminiLaunchMode: String, CaseIterable, Codable, Identifiable {
+enum GeminiLaunchMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case automationRunner
     case directWrapper
 
@@ -458,7 +515,7 @@ enum GeminiLaunchMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-enum ITermOpenMode: String, CaseIterable, Codable, Identifiable {
+enum ITermOpenMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case newWindow
     case newTab
 
@@ -472,7 +529,7 @@ enum ITermOpenMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-enum TerminalApp: String, CaseIterable, Codable, Identifiable {
+enum TerminalApp: String, CaseIterable, Codable, Identifiable, Sendable {
     case iterm2
     case terminal
 
@@ -528,7 +585,7 @@ enum LaunchBehaviorPreset: String, CaseIterable, Codable, Identifiable {
 }
 
 
-enum WorkspaceCompanionApp: String, CaseIterable, Codable, Identifiable {
+enum WorkspaceCompanionApp: String, CaseIterable, Codable, Identifiable, Sendable {
     case finder
     case visualStudioCode
 
@@ -635,6 +692,7 @@ enum LauncherTab: String, CaseIterable, Identifiable {
     case history
     case diagnostics
     case monitoring
+    case keystrokes
     case logs
     case settings
 
@@ -649,6 +707,7 @@ enum LauncherTab: String, CaseIterable, Identifiable {
         case .history: return "History"
         case .diagnostics: return "Diagnostics"
         case .monitoring: return "Monitoring"
+        case .keystrokes: return "Keystrokes"
         case .logs: return "Launch Log"
         case .settings: return "Settings"
         }
@@ -743,14 +802,14 @@ enum TerminalTranscriptCaptureMode: String, CaseIterable, Codable, Identifiable,
     }
 }
 
-struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
+struct MongoMonitoringSettings: Codable, Equatable, Sendable {
     var enabled: Bool = false
-    var enablePostgresWrites: Bool = false
+    var enableMongoWrites: Bool = false
     var connectionURL: String = "mongodb://127.0.0.1:27017"
     var schemaName: String = "clilauncher_monitor"
     var transcriptDirectory: String = AppPaths.defaultTranscriptDirectoryPath
     var captureMode: TerminalTranscriptCaptureMode = .inputAndOutput
-    var psqlExecutable: String = "mongosh"
+    var mongoshExecutable: String = "mongosh"
     var mongodExecutable: String = "mongod"
     var scriptExecutable: String = "/usr/bin/script"
     var pollingIntervalMs: Int = 700
@@ -768,8 +827,8 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case enabled, enablePostgresWrites, connectionURL, schemaName, transcriptDirectory
-        case captureMode, psqlExecutable, mongodExecutable, scriptExecutable, pollingIntervalMs
+        case enabled, enableMongoWrites = "enablePostgresWrites", connectionURL, schemaName, transcriptDirectory
+        case captureMode, mongoshExecutable = "psqlExecutable", mongodExecutable, scriptExecutable, pollingIntervalMs
         case previewCharacterLimit, keepLocalTranscriptFiles
         case recentHistoryLimit, recentHistoryLookbackDays
         case detailEventLimit, detailChunkLimit
@@ -779,16 +838,16 @@ struct PostgresMonitoringSettings: Codable, Equatable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
-        let defaults = PostgresMonitoringSettings()
+        let defaults = MongoMonitoringSettings()
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         enabled = try container.decodeDefault(Bool.self, forKey: .enabled, default: defaults.enabled)
-        enablePostgresWrites = try container.decodeDefault(Bool.self, forKey: .enablePostgresWrites, default: defaults.enablePostgresWrites)
+        enableMongoWrites = try container.decodeDefault(Bool.self, forKey: .enableMongoWrites, default: defaults.enableMongoWrites)
         connectionURL = try container.decodeDefault(String.self, forKey: .connectionURL, default: defaults.connectionURL)
         schemaName = try container.decodeDefault(String.self, forKey: .schemaName, default: defaults.schemaName)
         transcriptDirectory = try container.decodeDefault(String.self, forKey: .transcriptDirectory, default: defaults.transcriptDirectory)
         captureMode = try container.decodeDefault(TerminalTranscriptCaptureMode.self, forKey: .captureMode, default: defaults.captureMode)
-        psqlExecutable = try container.decodeDefault(String.self, forKey: .psqlExecutable, default: defaults.psqlExecutable)
+        mongoshExecutable = try container.decodeDefault(String.self, forKey: .mongoshExecutable, default: defaults.mongoshExecutable)
         mongodExecutable = try container.decodeDefault(String.self, forKey: .mongodExecutable, default: defaults.mongodExecutable)
         scriptExecutable = try container.decodeDefault(String.self, forKey: .scriptExecutable, default: defaults.scriptExecutable)
         pollingIntervalMs = try container.decodeDefault(Int.self, forKey: .pollingIntervalMs, default: defaults.pollingIntervalMs)
@@ -904,6 +963,8 @@ struct TerminalMonitorSession: Codable, Identifiable, Equatable, Sendable {
     var profileID: UUID?
     var profileName: String
     var agentKind: AgentKind
+    var accountIdentifier: String? = nil
+    var prompt: String = ""
     var workingDirectory: String
     var transcriptPath: String
     var launchCommand: String
@@ -982,7 +1043,7 @@ struct TerminalMonitorSessionDetails: Codable, Equatable, Sendable {
     }
 }
 
-struct PostgresStorageSummary: Codable, Equatable, Sendable {
+struct MongoStorageSummary: Codable, Equatable, Sendable {
     var sessionCount: Int = 0
     var activeSessionCount: Int = 0
     var completedSessionCount: Int = 0
@@ -1013,7 +1074,7 @@ struct PostgresStorageSummary: Codable, Equatable, Sendable {
     }
 }
 
-struct PostgresPruneSummary: Codable, Equatable, Sendable {
+struct MongoPruneSummary: Codable, Equatable, Sendable {
     var executedAt: Date = Date()
     var cutoffDate: Date
     var deletedSessions: Int = 0
@@ -1027,6 +1088,14 @@ struct PostgresPruneSummary: Codable, Equatable, Sendable {
         deletedSessions > 0 || deletedChunks > 0 || deletedEvents > 0 || deletedTranscriptFiles > 0
     }
 }
+
+// Backward-compatible aliases preserved temporarily for builds that still reference legacy type names.
+@available(*, deprecated, renamed: "MongoMonitoringSettings")
+typealias PostgresMonitoringSettings = MongoMonitoringSettings
+@available(*, deprecated, renamed: "MongoStorageSummary")
+typealias PostgresStorageSummary = MongoStorageSummary
+@available(*, deprecated, renamed: "MongoPruneSummary")
+typealias PostgresPruneSummary = MongoPruneSummary
 
 struct WorkspaceBookmark: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
@@ -1107,18 +1176,18 @@ struct AppSettings: Codable, Equatable {
     var defaultGeminiRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var defaultITermProfile: String = ""
     var defaultOpenMode: ITermOpenMode = .newWindow
-    var defaultHotkeyPrefix: String = "ctrl-\\"
+    var defaultHotkeyPrefix: String = "ctrl-g"
     var defaultShellBootstrapCommand: String = ""
     var defaultOpenWorkspaceInFinderOnLaunch: Bool = false
     var defaultOpenWorkspaceInVSCodeOnLaunch: Bool = false
     var defaultTabLaunchDelayMs: Int = 300
-    var defaultKeepTryMax: Int = 3
+    var defaultKeepTryMax: Int = 25
     var defaultManualOverrideMs: Int = 20_000
     var quietChildNodeWarningsByDefault: Bool = true
     var confirmBeforeLaunch: Bool = true
     var maxHistoryItems: Int = 100
     var maxBookmarks: Int = 60
-    var postgresMonitoring: PostgresMonitoringSettings = PostgresMonitoringSettings()
+    var mongoMonitoring: MongoMonitoringSettings = MongoMonitoringSettings()
     var observability: ObservabilitySettings = ObservabilitySettings()
     var environmentPresets: [EnvironmentPreset] = []
     var shellBootstrapPresets: [ShellBootstrapPreset] = []
@@ -1132,7 +1201,7 @@ struct AppSettings: Codable, Equatable {
         case defaultKeepTryMax, defaultManualOverrideMs
         case quietChildNodeWarningsByDefault, confirmBeforeLaunch
         case maxHistoryItems, maxBookmarks
-        case postgresMonitoring, observability
+        case mongoMonitoring = "postgresMonitoring", observability
         case environmentPresets, shellBootstrapPresets
     }
 
@@ -1156,7 +1225,7 @@ struct AppSettings: Codable, Equatable {
         confirmBeforeLaunch = try container.decodeDefault(Bool.self, forKey: .confirmBeforeLaunch, default: defaults.confirmBeforeLaunch)
         maxHistoryItems = try container.decodeDefault(Int.self, forKey: .maxHistoryItems, default: defaults.maxHistoryItems)
         maxBookmarks = try container.decodeDefault(Int.self, forKey: .maxBookmarks, default: defaults.maxBookmarks)
-        postgresMonitoring = try container.decodeDefault(PostgresMonitoringSettings.self, forKey: .postgresMonitoring, default: defaults.postgresMonitoring)
+        mongoMonitoring = try container.decodeDefault(MongoMonitoringSettings.self, forKey: .mongoMonitoring, default: defaults.mongoMonitoring)
         observability = try container.decodeDefault(ObservabilitySettings.self, forKey: .observability, default: defaults.observability)
         environmentPresets = try container.decodeDefault([EnvironmentPreset].self, forKey: .environmentPresets, default: defaults.environmentPresets)
         shellBootstrapPresets = try container.decodeDefault([ShellBootstrapPreset].self, forKey: .shellBootstrapPresets, default: defaults.shellBootstrapPresets)
@@ -1431,7 +1500,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiInitialModel: String = GeminiFlavor.preview.defaultInitialModel
     var geminiModelChain: String = GeminiFlavor.preview.defaultModelChain
     var geminiResumeLatest: Bool = true
-    var geminiKeepTryMax: Int = 3
+    var geminiKeepTryMax: Int = 25
     var geminiAutoContinueMode: AutoContinueMode = .promptOnly
     var geminiAutoAllowSessionPermissions: Bool = true
     var geminiAutomationEnabled: Bool = true
@@ -1439,7 +1508,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiQuietChildNodeWarnings: Bool = true
     var geminiRawOutput: Bool = false
     var geminiManualOverrideMs: Int = 20_000
-    var geminiHotkeyPrefix: String = "ctrl-\\"
+    var geminiHotkeyPrefix: String = "ctrl-g"
     var geminiAutomationRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var nodeExecutable: String = "node"
 
@@ -1469,6 +1538,14 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var ollamaIntegration: OllamaIntegration = .claude
     var ollamaModel: String = "glm-5.1:cloud"
     var ollamaConfigOnly: Bool = false
+
+    // Aider
+    var aiderExecutable: String = "aider"
+    var aiderMode: AiderMode = .code
+    var aiderModel: String = ""
+    var aiderAutoCommit: Bool = true
+    var aiderNotify: Bool = false
+    var aiderDarkTheme: Bool = true
 
     var expandedWorkingDirectory: String {
         NSString(string: workingDirectory).expandingTildeInPath
@@ -1536,6 +1613,8 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
             configuredExecutable = kiroExecutable
         case .ollamaLaunch:
             configuredExecutable = ollamaExecutable
+        case .aider:
+            configuredExecutable = aiderExecutable
         case .gemini:
             configuredExecutable = geminiWrapperCommand
         }
@@ -1611,13 +1690,13 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
                 geminiAutomationEnabled = true
                 geminiAutoAllowSessionPermissions = true
                 geminiAutoContinueMode = .promptOnly
-                geminiKeepTryMax = 3
+                geminiKeepTryMax = 25
                 geminiNeverSwitch = false
             case .aggressive:
                 geminiAutomationEnabled = true
                 geminiAutoAllowSessionPermissions = true
                 geminiAutoContinueMode = .capacity
-                geminiKeepTryMax = 8
+                geminiKeepTryMax = 50
                 geminiNeverSwitch = false
             }
         case .copilot:
@@ -1645,6 +1724,12 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
                 ollamaConfigOnly = false
             case .aggressive:
                 ollamaConfigOnly = true
+            }
+        case .aider:
+            switch preset {
+            case .safe: aiderMode = .ask
+            case .balanced: aiderMode = .code
+            case .aggressive: aiderMode = .architect
             }
         }
     }
@@ -1749,13 +1834,13 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     }
 }
 
-struct LaunchResult: Equatable {
+struct LaunchResult: Equatable, Sendable {
     var command: String
     var appleScript: String
     var description: String
 }
 
-struct PlannedLaunchItem: Identifiable, Equatable {
+struct PlannedLaunchItem: Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var profileID: UUID
     var profileName: String
@@ -1767,7 +1852,7 @@ struct PlannedLaunchItem: Identifiable, Equatable {
     var monitorSessionID: UUID? = nil
 }
 
-struct PostLaunchAction: Identifiable, Equatable {
+struct PostLaunchAction: Identifiable, Equatable, Sendable {
     var app: WorkspaceCompanionApp
     var path: String
     var label: String
@@ -1775,7 +1860,7 @@ struct PostLaunchAction: Identifiable, Equatable {
     var id: String { "\(app.rawValue)|\(path)" }
 }
 
-struct PlannedLaunch: Equatable {
+struct PlannedLaunch: Equatable, Sendable {
     var items: [PlannedLaunchItem]
     var postLaunchActions: [PostLaunchAction] = []
     var tabLaunchDelayMs: Int = 300
@@ -1850,7 +1935,7 @@ struct LogEntry: Identifiable, Codable, Equatable {
     var repeatCount: Int = 1
 }
 
-struct ToolStatus: Identifiable, Equatable, Codable {
+struct ToolStatus: Identifiable, Equatable, Codable, Sendable {
     var id: UUID = UUID()
     var name: String
     var requested: String
@@ -1901,18 +1986,18 @@ extension KeyedDecodingContainer {
 }
 
 extension JSONEncoder {
-    static var pretty: JSONEncoder {
+    static let pretty: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
-    }
+    }()
 }
 
 extension JSONDecoder {
-    static var pretty: JSONDecoder {
+    static let pretty: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
-    }
+    }()
 }

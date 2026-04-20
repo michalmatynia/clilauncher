@@ -7,6 +7,9 @@ final class ProfileStore: ObservableObject {
     private let fileManager = FileManager.default
     private(set) var stateURL: URL
     private var isApplyingStateNormalization = false
+    private var pendingSaveTask: Task<Void, Never>?
+    private static let saveDebounceNanoseconds: UInt64 = 400_000_000
+    private nonisolated(unsafe) var terminationObserver: NSObjectProtocol?
 
     @Published var profiles: [LaunchProfile] { didSet { stateDidChange() } }
     @Published var selectedProfileID: UUID? { didSet { stateDidChange() } }
@@ -53,6 +56,22 @@ final class ProfileStore: ObservableObject {
         bookmarks = initialBookmarks
         workbenches = initialWorkbenches
         normalizeState()
+
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flushPendingSave()
+            }
+        }
+    }
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
     }
 
     private static func loadState(at url: URL) -> PersistedState? {
@@ -306,7 +325,36 @@ final class ProfileStore: ObservableObject {
             sanitizeReferencesWithoutNotifications()
             clampSelectionWithoutNotifications()
         }
-        save()
+        scheduleSave()
+    }
+
+    private func scheduleSave() {
+        pendingSaveTask?.cancel()
+        pendingSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.saveDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.performPendingSave()
+        }
+    }
+
+    private func performPendingSave() {
+        pendingSaveTask = nil
+        writeStateToDisk()
+    }
+
+    func flushPendingSave() {
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
+        writeStateToDisk()
+    }
+
+    private func writeStateToDisk() {
+        do {
+            let data = try JSONEncoder.pretty.encode(currentPersistedState())
+            try data.write(to: stateURL, options: [.atomic])
+        } catch {
+            print("Failed to save state: \(error)")
+        }
     }
 
     private func performNormalizationSuppressed(_ mutation: () -> Void) {
@@ -328,7 +376,7 @@ final class ProfileStore: ObservableObject {
         normalizedSettings.maxHistoryItems = max(1, min(1_000, normalizedSettings.maxHistoryItems))
         normalizedSettings.maxBookmarks = max(1, min(1_000, normalizedSettings.maxBookmarks))
 
-        var monitoring = normalizedSettings.postgresMonitoring
+        var monitoring = normalizedSettings.mongoMonitoring
         monitoring.pollingIntervalMs = max(100, min(60_000, monitoring.pollingIntervalMs))
         monitoring.previewCharacterLimit = max(100, min(20_000, monitoring.previewCharacterLimit))
         monitoring.recentHistoryLimit = monitoring.clampedRecentHistoryLimit
@@ -338,7 +386,7 @@ final class ProfileStore: ObservableObject {
         monitoring.transcriptPreviewByteLimit = monitoring.clampedTranscriptPreviewByteLimit
         monitoring.databaseRetentionDays = monitoring.clampedDatabaseRetentionDays
         monitoring.localTranscriptRetentionDays = monitoring.clampedLocalTranscriptRetentionDays
-        normalizedSettings.postgresMonitoring = monitoring
+        normalizedSettings.mongoMonitoring = monitoring
 
         var observability = normalizedSettings.observability
         observability.maxInMemoryEntries = max(100, min(10_000, observability.maxInMemoryEntries))
@@ -449,12 +497,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func save() {
-        do {
-            let data = try JSONEncoder.pretty.encode(currentPersistedState())
-            try data.write(to: stateURL, options: [.atomic])
-        } catch {
-            print("Failed to save state: \(error)")
-        }
+        flushPendingSave()
     }
 
     private static func uniquePreservingOrder<T: Hashable>(_ items: [T]) -> [T] {

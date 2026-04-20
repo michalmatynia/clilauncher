@@ -131,7 +131,7 @@ struct CommandBuilder {
             if !home.isEmpty {
                 env["COPILOT_HOME"] = home
             }
-        case .codex, .claudeBypass, .kiroCLI, .ollamaLaunch:
+        case .codex, .claudeBypass, .kiroCLI, .ollamaLaunch, .aider:
             break
         }
 
@@ -162,6 +162,8 @@ struct CommandBuilder {
             return try buildKiroExecutableAndArgs(profile: profile)
         case .ollamaLaunch:
             return try buildOllamaExecutableAndArgs(profile: profile)
+        case .aider:
+            return try buildAiderExecutableAndArgs(profile: profile)
         }
     }
 
@@ -305,6 +307,45 @@ struct CommandBuilder {
         if profile.ollamaConfigOnly {
             args.append("--config")
         }
+        args.append(contentsOf: splitCLIArguments(profile.trimmedExtraCLIArgs))
+        return (executable, args)
+    }
+
+    private func buildAiderExecutableAndArgs(profile: LaunchProfile) throws -> (String, [String]) {
+        let executable = try resolveProviderExecutableOrThrow(
+            profile: profile,
+            workingDirectory: profile.expandedWorkingDirectory
+        )
+        var args: [String] = []
+
+        switch profile.aiderMode {
+        case .code:
+            break
+        case .architect:
+            args.append("--architect")
+        case .ask:
+            args.append("--ask")
+        }
+
+        let model = profile.aiderModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !model.isEmpty {
+            args += ["--model", model]
+        }
+
+        if !profile.aiderAutoCommit {
+            args.append("--no-auto-commit")
+        }
+
+        if profile.aiderNotify {
+            args.append("--notify")
+        }
+
+        if profile.aiderDarkTheme {
+            args.append("--dark-mode")
+        } else {
+            args.append("--light-mode")
+        }
+
         args.append(contentsOf: splitCLIArguments(profile.trimmedExtraCLIArgs))
         return (executable, args)
     }
@@ -609,7 +650,7 @@ struct LaunchPlanner {
     }
 }
 
-struct PreflightCheck {
+struct PreflightCheck: Sendable {
     var warnings: [String] = []
     var errors: [String] = []
     var statuses: [ToolStatus] = []
@@ -1054,7 +1095,8 @@ struct ToolDiscoveryService {
             iTermDetail = "Not found in Launch Services or standard /Applications locations."
         }
         statuses.append(ToolStatus(name: "iTerm2", requested: ITerm2RuntimeService.bundleIdentifier, resolved: resolvedITermPath, detail: iTermDetail, isError: !iTermAvailable))
-        statuses.append(ToolStatus(name: "AppleScript engine", requested: "/usr/bin/osascript", resolved: FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript") ? "/usr/bin/osascript" : nil, detail: FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript") ? "System AppleScript runner is available." : "/usr/bin/osascript is missing.", isError: !FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript")))
+        let osascriptAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript")
+        statuses.append(ToolStatus(name: "AppleScript engine", requested: "/usr/bin/osascript", resolved: osascriptAvailable ? "/usr/bin/osascript" : nil, detail: osascriptAvailable ? "System AppleScript runner is available." : "/usr/bin/osascript is missing.", isError: !osascriptAvailable))
 
         let workspacePath = profile.expandedWorkingDirectory
         var isDirectory: ObjCBool = false
@@ -1094,8 +1136,8 @@ struct ToolDiscoveryService {
             statuses.append(ToolStatus(name: "VS Code post-launch", requested: "com.microsoft.VSCode", resolved: available ? "Installed" : nil, detail: available ? "Visual Studio Code is available for workspace open." : "Visual Studio Code app not found", isError: !available))
         }
 
-        if settings.postgresMonitoring.enabled {
-            statuses.append(contentsOf: MonitoringDiagnosticsService().inspect(settings: settings.postgresMonitoring))
+        if settings.mongoMonitoring.enabled {
+            statuses.append(contentsOf: MonitoringDiagnosticsService().inspect(settings: settings.mongoMonitoring))
         }
 
         switch profile.agentKind {
@@ -1217,6 +1259,15 @@ struct ToolDiscoveryService {
             if profile.agentKind == .ollamaLaunch, let resolved = resolved {
                 appendOllamaModelCheck(profile: profile, executable: resolved, statuses: &statuses, warnings: &warnings)
             }
+
+        case .aider:
+            let workingDirectory = profile.expandedWorkingDirectory
+            _ = appendProviderExecutableCheck(
+                profile: profile,
+                workingDirectory: workingDirectory,
+                statusAppendBlock: { statuses.append($0) },
+                warnings: &warnings
+            )
         }
 
         return (statuses: statuses, warnings: warnings)
@@ -1319,19 +1370,19 @@ struct PreflightService {
         if profile.tabLaunchDelayMs < 100 {
             check.warnings.append("Tab launch delay below 100 ms can cause iTerm2 tab creation race conditions.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.captureMode.usesScriptKeyLogging {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output. Passwords or secrets typed in the terminal can be recorded.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.mongoConnection.isLocal {
-            if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.mongoConnection.isLocal {
+            if commandBuilder.resolvedExecutable(settings.mongoMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
-            if settings.postgresMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if settings.mongoMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 check.errors.append("Local MongoDB URL is configured, but local Mongo data directory is empty.")
-            } else if !FileManager.default.fileExists(atPath: settings.postgresMonitoring.expandedLocalDataDirectory) {
+            } else if !FileManager.default.fileExists(atPath: settings.mongoMonitoring.expandedLocalDataDirectory) {
                 check.warnings.append("Local Mongo data directory does not exist yet; it will be created on first monitoring write.")
             }
         }
@@ -1390,17 +1441,17 @@ struct PreflightService {
         if !check.statuses.filter({ $0.isError }).isEmpty {
             check.errors.append(contentsOf: check.statuses.filter { $0.isError }.map { $0.name + ": " + $0.detail })
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.captureMode.usesScriptKeyLogging {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output for launched workbench tabs.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.trimmedConnectionURL.isEmpty {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.postgresMonitoring.enabled && settings.postgresMonitoring.enablePostgresWrites && settings.postgresMonitoring.mongoConnection.isLocal {
-            if commandBuilder.resolvedExecutable(settings.postgresMonitoring.mongodExecutable) == nil {
+        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.mongoConnection.isLocal {
+            if commandBuilder.resolvedExecutable(settings.mongoMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
-            if settings.postgresMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if settings.mongoMonitoring.expandedLocalDataDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 check.errors.append("Local MongoDB URL is configured, but local Mongo data directory is empty.")
             }
         }

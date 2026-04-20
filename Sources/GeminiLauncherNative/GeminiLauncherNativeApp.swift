@@ -25,6 +25,11 @@ struct CLILauncherNativeApp: App {
                     NotificationCenter.default.post(name: .relaunchLastRequested, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                Button("Toggle Automation") {
+                    NotificationCenter.default.post(name: .toggleAutomationRequested, object: nil)
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
             }
         }
     }

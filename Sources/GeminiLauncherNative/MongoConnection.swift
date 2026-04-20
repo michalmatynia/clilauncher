@@ -51,11 +51,12 @@ struct MongoConnectionDescriptor: Equatable, Sendable {
         if redacted.password != nil {
             redacted.password = "••••••"
         }
-        return redacted.string ?? "Configured"
+        return redacted.url?.absoluteString.removingPercentEncoding ?? "Configured"
     }
 
     static func isLocalHost(_ host: String) -> Bool {
-        switch host.lowercased() {
+        let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        switch normalizedHost {
         case "127.0.0.1", "::1", "localhost", "0.0.0.0":
             return true
         default:
