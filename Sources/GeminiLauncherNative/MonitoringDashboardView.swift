@@ -327,6 +327,11 @@ struct MonitoringDashboardView: View {
                         showingPruneConfirmation = true
                     }
                     .disabled(!store.settings.mongoMonitoring.enabled || terminalMonitor.isPruningStoredHistory)
+
+                    Button("Backup Database…") {
+                        terminalMonitor.performBackup(settings: store.settings, logger: logger)
+                    }
+                    .disabled(!store.settings.mongoMonitoring.enabled || !store.settings.mongoMonitoring.enableMongoWrites)
                 }
             }
         }

@@ -138,6 +138,7 @@ struct ProviderDefinition {
     let configPaths: [String]
     let envKeys: [String]
     let installDocumentation: String
+    let updateCommand: String?
     let riskLevel: ProviderRiskLevel
 }
 
@@ -186,7 +187,7 @@ extension AgentKind {
                 configPaths: ["~/.config/gemini", "~/.gemini", "~/.cache/gemini", "~/Library/Application Support/Gemini"],
                 envKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"],
                 installDocumentation: "https://github.com/google-gemini/gemini-cli",
-                riskLevel: .low
+                updateCommand: "gemini extensions update", riskLevel: .low
             )
 
         case .copilot:
@@ -228,7 +229,7 @@ extension AgentKind {
                 configPaths: ["~/.config/github-copilot", "~/.local/share/github-copilot", "~/.copilot"],
                 envKeys: ["GITHUB_TOKEN", "GH_TOKEN", "COPILOT_TOKEN"],
                 installDocumentation: "https://github.com/features/copilot",
-                riskLevel: .medium
+                updateCommand: nil, riskLevel: .medium
             )
 
         case .codex:
@@ -261,7 +262,7 @@ extension AgentKind {
                 configPaths: ["~/.config/codex", "~/.codex"],
                 envKeys: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION"],
                 installDocumentation: "https://openai.com/codex",
-                riskLevel: .medium
+                updateCommand: nil, riskLevel: .medium
             )
 
         case .claudeBypass:
@@ -293,7 +294,7 @@ extension AgentKind {
                 configPaths: ["~/.config/claude", "~/.claude"],
                 envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", "CLAUDE_API_KEY"],
                 installDocumentation: "https://docs.anthropic.com/en/docs/claude-code",
-                riskLevel: .medium
+                updateCommand: nil, riskLevel: .medium
             )
 
         case .kiroCLI:
@@ -325,7 +326,7 @@ extension AgentKind {
                 configPaths: ["~/.config/kiro", "~/.kiro"],
                 envKeys: ["KIRO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
                 installDocumentation: "https://github.com/iambenf/kiro-cli",
-                riskLevel: .low
+                updateCommand: "gemini extensions update", riskLevel: .low
             )
 
         case .ollamaLaunch:
@@ -361,7 +362,7 @@ extension AgentKind {
                 configPaths: ["~/.ollama", "~/.config/ollama"],
                 envKeys: ["OLLAMA_HOST", "OLLAMA_ORIGINS"],
                 installDocumentation: "https://ollama.com",
-                riskLevel: .low
+                updateCommand: "gemini extensions update", riskLevel: .low
             )
 
         case .aider:
@@ -397,7 +398,7 @@ extension AgentKind {
                 configPaths: ["~/.aider.conf.yml", "~/.aider.model.settings.yml"],
                 envKeys: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"],
                 installDocumentation: "https://aider.chat",
-                riskLevel: .medium
+                updateCommand: nil, riskLevel: .medium
             )
         }
     }
@@ -1976,6 +1977,7 @@ struct ToolStatus: Identifiable, Equatable, Codable, Sendable {
     var detail: String
     var isError: Bool
     var resolutionSource: String?
+    var updateCommand: String?
 }
 
 struct DiagnosticITermSnapshot: Codable {

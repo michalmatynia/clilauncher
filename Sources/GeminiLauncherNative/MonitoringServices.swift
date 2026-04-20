@@ -1284,6 +1284,7 @@ final class TerminalMonitorStore: ObservableObject {
     private var lastStorageSummaryRefreshAt: Date?
     private var sessionIndexByID: [UUID: Int] = [:]
     private let writer = MongoMonitoringWriter()
+    private let backupService = DatabaseBackupService()
     private let diagnostics = MonitoringDiagnosticsService()
 
     func prepare(plan: PlannedLaunch, profiles: [LaunchProfile], settings: AppSettings, logger: LaunchLogger) throws -> PlannedLaunch {
@@ -1666,9 +1667,34 @@ final class TerminalMonitorStore: ObservableObject {
         }
     }
 
-    func statuses(for settings: AppSettings) -> [ToolStatus] {
-        diagnostics.inspect(settings: settings.mongoMonitoring)
+    func performBackup(settings: AppSettings, logger: LaunchLogger) {
+        guard settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites else {
+            return
+        }
+
+        let savePanel = NSSavePanel()
+        savePanel.title = "Select Backup Destination"
+        savePanel.nameFieldStringValue = "clilauncher-backup-\(Date().formatted(date: .numeric, time: .omitted))"
+        savePanel.canCreateDirectories = true
+
+        savePanel.begin { [weak self] response in
+            guard let self, response == .OK, let url = savePanel.directoryURL else { return }
+            
+            Task {
+                do {
+                    let backupURL = try await self.backupService.performBackup(settings: settings.mongoMonitoring, destinationFolder: url)
+                    await MainActor.run {
+                        logger.log(.success, "Backup completed successfully at: \(backupURL.path)", category: .monitoring)
+                    }
+                } catch {
+                    await MainActor.run {
+                        logger.log(.error, "Backup failed: \(error.localizedDescription)", category: .monitoring)
+                    }
+                }
+            }
+        }
     }
+
 
     func details(for sessionID: UUID) -> TerminalMonitorSessionDetails? {
         sessionDetailsByID[sessionID]

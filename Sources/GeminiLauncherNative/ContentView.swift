@@ -611,7 +611,8 @@ struct ContentView: View {
 
     private var diagnosticsTab: some View {
         DiagnosticsTabPane(
-            preview: preview
+            preview: preview,
+            logger: logger
         )
     }
 
@@ -3352,7 +3353,8 @@ private struct LaunchCenterPane: View {
 
 private struct DiagnosticsTabPane: View {
     @ObservedObject var preview: LaunchPreviewStore
-
+    let logger: LaunchLogger
+    
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -3379,6 +3381,9 @@ private struct DiagnosticsTabPane: View {
                                     Text("Source: \(resolutionSource)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                }
+                                if let update = status.updateCommand {
+                                    UpdateButton(name: status.name, command: update, logger: logger)
                                 }
                                 Text(status.detail)
                                     .foregroundStyle(.secondary)
