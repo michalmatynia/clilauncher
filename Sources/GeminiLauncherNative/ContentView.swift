@@ -4,11 +4,11 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class LaunchPreviewStore: ObservableObject {
-    @Published var diagnostics: PreflightCheck = PreflightCheck()
-    @Published var planPreview: PlannedLaunch? = nil
-    @Published var workbenchPlanPreview: PlannedLaunch? = nil
-    @Published var commandPreview: LaunchResult? = nil
-    @Published var selectedWorkbenchDiagnostics: PreflightCheck = PreflightCheck()
+    @Published var diagnostics = PreflightCheck()
+    @Published var planPreview: PlannedLaunch?
+    @Published var workbenchPlanPreview: PlannedLaunch?
+    @Published var commandPreview: LaunchResult?
+    @Published var selectedWorkbenchDiagnostics = PreflightCheck()
     @Published var availableITermProfiles: [String] = []
     @Published var iTermProfileSourceDescription: String = ""
     @Published var isVSCodeAvailable: Bool = false
@@ -23,7 +23,7 @@ struct ContentView: View {
     @State private var selectedTab: LauncherTab = .launch
     @State private var bookmarkSelection: UUID?
     @State private var workbenchSelection: UUID?
-    @State private var liveRefreshTask: Task<Void, Never>? = nil
+    @State private var liveRefreshTask: Task<Void, Never>?
     @State private var showingDeleteProfileAlert = false
     @State private var showingDeleteWorkbenchAlert = false
 
@@ -77,7 +77,7 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(LauncherTab.settings)
         }
-        .frame(minWidth: 1240, minHeight: 820)
+        .frame(minWidth: 1_240, minHeight: 820)
         .onAppear {
             logger.apply(settings: store.settings.observability)
             refreshLiveState()
@@ -96,6 +96,12 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleAutomationRequested)) { _ in
             toggleSelectedProfileAutomation()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .enableAutomationRequested)) { _ in
+            setSelectedProfileAutomation(enabled: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .disableAutomationRequested)) { _ in
+            setSelectedProfileAutomation(enabled: false)
         }
         .onChange(of: selectedTab) { selection in
             if selection == .monitoring {
@@ -151,7 +157,7 @@ struct ContentView: View {
 
     private var selectedWorkbench: LaunchWorkbench? {
         guard let workbenchSelection else { return nil }
-        return store.workbenches.first(where: { $0.id == workbenchSelection })
+        return store.workbenches.first { $0.id == workbenchSelection }
     }
 
     private var shouldRefreshLiveState: Bool {
@@ -212,16 +218,16 @@ struct ContentView: View {
 
     private var selectedEnvironmentPreset: EnvironmentPreset? {
         guard let presetID = store.selectedProfile?.environmentPresetID else { return nil }
-        return store.settings.environmentPresets.first(where: { $0.id == presetID })
+        return store.settings.environmentPresets.first { $0.id == presetID }
     }
 
     private var selectedBootstrapPreset: ShellBootstrapPreset? {
         guard let presetID = store.selectedProfile?.bootstrapPresetID else { return nil }
-        return store.settings.shellBootstrapPresets.first(where: { $0.id == presetID })
+        return store.settings.shellBootstrapPresets.first { $0.id == presetID }
     }
 
     private var featuredWorkbenches: [LaunchWorkbench] {
-        let favorites = store.workbenches.filter { $0.tags.contains(where: { $0.lowercased() == "favorite" }) }
+        let favorites = store.workbenches.filter { $0.tags.contains { $0.lowercased() == "favorite" } }
         if !favorites.isEmpty { return Array(favorites.prefix(4)) }
         return Array(store.workbenches.prefix(4))
     }
@@ -332,7 +338,7 @@ struct ContentView: View {
             bookmarks: store.bookmarks,
             cautionMessages: store.selectedProfile.map { LaunchTemplateCatalog.cautions(for: $0) } ?? [],
             isVSCodeAvailable: preview.isVSCodeAvailable,
-            favoriteProfiles: store.profiles.filter { $0.isFavorite },
+            favoriteProfiles: store.profiles.filter(\.isFavorite),
             launchSelectedProfile: launchSelectedProfile,
             duplicateSelectedProfile: store.duplicateSelectedProfile,
             applyPreset: { preset in
@@ -444,12 +450,12 @@ struct ContentView: View {
                                 },
                                 manageSharedPresets: {
                                     selectedTab = .settings
-                                },            onAgentKindChanged: { newValue in
+                                }, onAgentKindChanged: { newValue in
                 store.updateSelected { updated in
                     updated.agentKind = newValue
                     updated.applyKindDefaults(settings: store.settings)
                 }
-            },
+                                },
             onGeminiFlavorChanged: {
                 store.updateSelected { updated in
                     updated.applyGeminiFlavorDefaults()
@@ -619,7 +625,6 @@ struct ContentView: View {
         )
     }
 
-
     private var monitoringTab: some View {
         MonitoringDashboardView()
     }
@@ -630,8 +635,11 @@ struct ContentView: View {
             activeProfilePrefix: resolvedProfileHotkeyPrefix,
             selectedProfileAutomationMode: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiLaunchMode : nil,
             selectedProfileAutomationEnabled: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiAutomationEnabled : nil,
-            defaultHotkeyPrefix: store.settings.defaultHotkeyPrefix
-        )
+            defaultHotkeyPrefix: store.settings.defaultHotkeyPrefix,
+            canToggleAutomation: store.selectedProfile?.agentKind == .gemini
+        ) { value in
+                setSelectedProfileAutomation(enabled: value)
+        }
     }
 
     private var settingsTab: some View {
@@ -657,7 +665,7 @@ struct ContentView: View {
     }
 
     private func mergedEnvironmentSummary(for profile: LaunchProfile) -> String {
-        let presetCount = store.settings.environmentPresets.first(where: { $0.id == profile.environmentPresetID })?.entries.count ?? 0
+        let presetCount = store.settings.environmentPresets.first { $0.id == profile.environmentPresetID }?.entries.count ?? 0
         let profileCount = profile.environmentEntries.filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
         let total = commandBuilder.buildEnvironment(profile: profile, settings: store.settings).count
         return "Shared: \(presetCount) • Profile: \(profileCount) • Effective: \(total)"
@@ -775,7 +783,7 @@ struct ContentView: View {
                 logger.log(.info, "Launch cancelled.", category: .launch)
                 return
             }
-            if !preview.diagnostics.isPassing && profile.id == store.selectedProfileID {
+            if !preview.diagnostics.isPassing, profile.id == store.selectedProfileID {
                 let detail = ([preview.diagnostics.errors.joined(separator: " | "), preview.diagnostics.warnings.joined(separator: " | ")].filter { !$0.isEmpty }).joined(separator: " • ")
                 logger.log(.warning, "Launching despite preflight issues.", category: .preflight, details: detail.isEmpty ? nil : detail)
             }
@@ -859,6 +867,25 @@ struct ContentView: View {
         }
     }
 
+    private func setSelectedProfileAutomation(enabled: Bool) {
+        guard let profile = store.selectedProfile else {
+            logger.log(.warning, "No selected profile to change automation state.")
+            return
+        }
+        guard profile.agentKind == .gemini else {
+            logger.log(.warning, "Automation state changes are only supported for Gemini profiles.")
+            return
+        }
+        guard profile.geminiAutomationEnabled != enabled else {
+            logger.log(.info, "Automation is already \(enabled ? "enabled" : "disabled") for '\(profile.name)'.", category: .app)
+            return
+        }
+
+        store.updateSelected { $0.geminiAutomationEnabled = enabled }
+        logger.log(.info, "Automation \(enabled ? "enabled" : "disabled") for '\(profile.name)'.", category: .app)
+        scheduleLiveStateRefresh(immediate: true)
+    }
+
     private func addWorkbenchFromCurrentSelection() {
         let workbench = store.addWorkbench(seedProfileID: store.selectedProfileID, sharedBookmarkID: bookmarkSelection)
         workbenchSelection = workbench.id
@@ -932,7 +959,7 @@ struct ContentView: View {
     private func workbenchMembershipBinding(workbenchID: UUID, profileID: UUID) -> Binding<Bool> {
         Binding(
             get: {
-                store.workbenches.first(where: { $0.id == workbenchID })?.profileIDs.contains(profileID) == true
+                store.workbenches.first { $0.id == workbenchID }?.profileIDs.contains(profileID) == true
             },
             set: { enabled in
                 guard let index = store.workbenches.firstIndex(where: { $0.id == workbenchID }) else { return }
@@ -951,7 +978,7 @@ struct ContentView: View {
         guard let index = store.workbenches.firstIndex(where: { $0.id == workbenchID }),
               let current = store.workbenches[index].profileIDs.firstIndex(of: profileID) else { return }
         let destination = current + direction
-        guard destination >= 0 && destination < store.workbenches[index].profileIDs.count else { return }
+        guard destination >= 0, destination < store.workbenches[index].profileIDs.count else { return }
         let moved = store.workbenches[index].profileIDs.remove(at: current)
         store.workbenches[index].profileIDs.insert(moved, at: destination)
     }
@@ -1123,7 +1150,6 @@ struct ContentView: View {
             .padding()
         }
     }
-
 }
 
 @MainActor
@@ -1134,7 +1160,7 @@ private struct LaunchPlanPreviewCard: View, Equatable {
     let copyAppleScript: () -> Void
     let exportLauncher: () -> Void
 
-    nonisolated static func == (lhs: LaunchPlanPreviewCard, rhs: LaunchPlanPreviewCard) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.suggestedName == rhs.suggestedName && lhs.planSignature == rhs.planSignature
     }
 
@@ -1214,7 +1240,7 @@ private struct WorkbenchPreflightCard: View, Equatable {
     let postLaunchHints: [String]
     let diagnostics: PreflightCheck
 
-    nonisolated static func == (lhs: WorkbenchPreflightCard, rhs: WorkbenchPreflightCard) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.postLaunchHints == rhs.postLaunchHints &&
         lhs.diagnostics.errors == rhs.diagnostics.errors &&
         lhs.diagnostics.warnings == rhs.diagnostics.warnings
@@ -1242,7 +1268,7 @@ private struct WorkbenchPreflightCard: View, Equatable {
                     Label(item, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                if diagnostics.errors.isEmpty && diagnostics.warnings.isEmpty {
+                if diagnostics.errors.isEmpty, diagnostics.warnings.isEmpty {
                     Label("Workbench plan looks ready.", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
@@ -1260,7 +1286,7 @@ private struct WorkbenchLaunchPreviewCard: View, Equatable {
     let copyAppleScript: () -> Void
     let exportLauncher: () -> Void
 
-    nonisolated static func == (lhs: WorkbenchLaunchPreviewCard, rhs: WorkbenchLaunchPreviewCard) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.suggestedName == rhs.suggestedName && lhs.planSignature == rhs.planSignature
     }
 
@@ -1297,7 +1323,7 @@ private struct WorkbenchLaunchPreviewCard: View, Equatable {
 private struct CurrentPlanDiagnosticsCard: View, Equatable {
     let plan: PlannedLaunch?
 
-    nonisolated static func == (lhs: CurrentPlanDiagnosticsCard, rhs: CurrentPlanDiagnosticsCard) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.planSignature == rhs.planSignature
     }
 
@@ -1341,7 +1367,7 @@ private struct ProfileActionRow: View, Equatable {
     let copyAppleScript: () -> Void
     let exportLauncher: () -> Void
 
-    nonisolated static func == (lhs: ProfileActionRow, rhs: ProfileActionRow) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.commandPreviewSignature == rhs.commandPreviewSignature
     }
 
@@ -1569,7 +1595,7 @@ private struct ProfileGeneralSection: View {
 
                 Toggle("Open workspace in Finder after launch", isOn: $profile.openWorkspaceInFinderOnLaunch)
                 Toggle("Open workspace in VS Code after launch", isOn: $profile.openWorkspaceInVSCodeOnLaunch)
-                Stepper(value: $profile.tabLaunchDelayMs, in: 50...3000, step: 50) {
+                Stepper(value: $profile.tabLaunchDelayMs, in: 50...3_000, step: 50) {
                     Text("Delay between iTerm2 tabs: \(profile.tabLaunchDelayMs) ms")
                 }
 
@@ -1617,16 +1643,22 @@ private struct ProfileProviderSection: View {
                 onGeminiFlavorChanged: onGeminiFlavorChanged,
                 revealISO: revealISO
             )
+
         case .copilot:
             ProfileCopilotProviderSection(profile: $profile)
+
         case .codex:
             ProfileCodexProviderSection(profile: $profile)
+
         case .claudeBypass:
             ProfileClaudeProviderSection(profile: $profile)
+
         case .kiroCLI:
             ProfileKiroProviderSection(profile: $profile)
+
         case .ollamaLaunch:
             ProfileOllamaProviderSection(profile: $profile)
+
         case .aider:
             ProfileAiderProviderSection(profile: $profile)
         }
@@ -1683,6 +1715,14 @@ private struct ProfileGeminiProviderSection: View {
                     }
                     .help("Reset model chain to flavor default")
                 }
+                HStack(alignment: .top) {
+                    TextField("Initial prompt", text: $profile.geminiInitialPrompt, axis: .vertical)
+                        .lineLimit(2...5)
+                    Button("Clear") {
+                        profile.geminiInitialPrompt = ""
+                    }
+                    .help("Clear initial prompt")
+                }
                 TextField("Automation runner path", text: $profile.geminiAutomationRunnerPath)
                 Text("Leave the automation runner path blank to use the app-bundled runner for \(profile.geminiFlavor.displayName).")
                     .font(.caption)
@@ -1691,15 +1731,15 @@ private struct ProfileGeminiProviderSection: View {
                 TextField("Hotkey prefix", text: $profile.geminiHotkeyPrefix)
 
                 HStack {
-                    Stepper(value: $profile.geminiKeepTryMax, in: 0...1000) {
+                    Stepper(value: $profile.geminiKeepTryMax, in: 0...1_000) {
                         Text("Keep-try max: \(profile.geminiKeepTryMax)")
                     }
-                    Stepper(value: $profile.geminiManualOverrideMs, in: 1000...120000, step: 1000) {
+                    Stepper(value: $profile.geminiManualOverrideMs, in: 1_000...120_000, step: 1_000) {
                         Text("Manual override: \(profile.geminiManualOverrideMs) ms")
                     }
                 }
                 HStack {
-                    Stepper(value: $profile.geminiCapacityRetryMs, in: 250...30000, step: 250) {
+                    Stepper(value: $profile.geminiCapacityRetryMs, in: 250...30_000, step: 250) {
                         Text("Capacity retry: \(profile.geminiCapacityRetryMs) ms")
                     }
                 }
@@ -1716,13 +1756,13 @@ private struct ProfileGeminiProviderSection: View {
                     .onChange(of: profile.geminiYolo) { newValue in
                         if newValue {
                             profile.geminiAutoContinueMode = .yolo
-                            profile.geminiKeepTryMax = 1000
+                            profile.geminiKeepTryMax = 10
                             profile.geminiCapacityRetryMs = 500
                             profile.geminiAutoAllowSessionPermissions = true
                         } else {
                             profile.geminiAutoContinueMode = .promptOnly
                             profile.geminiKeepTryMax = 25
-                            profile.geminiCapacityRetryMs = 5000
+                            profile.geminiCapacityRetryMs = 5_000
                         }
                     }
                 Toggle("Auto allow session permissions", isOn: $profile.geminiAutoAllowSessionPermissions)
@@ -2144,7 +2184,7 @@ private struct ProfilesSidebarPane: View {
                                     Image(systemName: "star.fill")
                                         .foregroundStyle(.yellow)
                                 }
-                                if profile.agentKind == .gemini && profile.geminiAutomationEnabled {
+                                if profile.agentKind == .gemini, profile.geminiAutomationEnabled {
                                     Image(systemName: "bolt.fill")
                                         .foregroundStyle(.green)
                                         .imageScale(.small)
@@ -2435,13 +2475,13 @@ private struct SettingsDefaultsSection: View {
                 }
             }
 
-            Stepper(value: $settings.defaultTabLaunchDelayMs, in: 50...3000, step: 50) {
+            Stepper(value: $settings.defaultTabLaunchDelayMs, in: 50...3_000, step: 50) {
                 Text("Default iTerm2 tab delay: \(settings.defaultTabLaunchDelayMs) ms")
             }
             Stepper(value: $settings.defaultKeepTryMax, in: 0...25) {
                 Text("Default automation keep-try max: \(settings.defaultKeepTryMax)")
             }
-            Stepper(value: $settings.defaultManualOverrideMs, in: 1000...120000, step: 1000) {
+            Stepper(value: $settings.defaultManualOverrideMs, in: 1_000...120_000, step: 1_000) {
                 Text("Default manual override: \(settings.defaultManualOverrideMs) ms")
             }
             Stepper(value: $settings.maxHistoryItems, in: 20...500, step: 10) {
@@ -2466,7 +2506,7 @@ private struct SettingsObservabilitySection: View {
             Toggle("Persist logs to disk", isOn: $settings.observability.persistLogsToDisk)
             Toggle("Include AppleScript payloads in logs", isOn: $settings.observability.includeAppleScriptInLogs)
             Toggle("Deduplicate repeated log entries", isOn: $settings.observability.deduplicateRepeatedEntries)
-            Stepper(value: $settings.observability.maxInMemoryEntries, in: 100...10000, step: 100) {
+            Stepper(value: $settings.observability.maxInMemoryEntries, in: 100...10_000, step: 100) {
                 Text("In-memory log limit: \(settings.observability.maxInMemoryEntries)")
             }
             HStack {
@@ -2612,12 +2652,12 @@ private struct SettingsMonitoringSection: View {
             TextField("Transcript directory", text: $settings.mongoMonitoring.transcriptDirectory)
                 .disabled(!settings.mongoMonitoring.enabled)
 
-            Stepper(value: $settings.mongoMonitoring.pollingIntervalMs, in: 250...5000, step: 50) {
+            Stepper(value: $settings.mongoMonitoring.pollingIntervalMs, in: 250...5_000, step: 50) {
                 Text("Polling interval: \(settings.mongoMonitoring.pollingIntervalMs) ms")
             }
             .disabled(!settings.mongoMonitoring.enabled)
 
-            Stepper(value: $settings.mongoMonitoring.previewCharacterLimit, in: 100...8000, step: 100) {
+            Stepper(value: $settings.mongoMonitoring.previewCharacterLimit, in: 100...8_000, step: 100) {
                 Text("Chunk preview limit: \(settings.mongoMonitoring.previewCharacterLimit) chars")
             }
             .disabled(!settings.mongoMonitoring.enabled)
@@ -2649,12 +2689,12 @@ private struct SettingsMonitoringSection: View {
             }
             .disabled(!settings.mongoMonitoring.enabled)
 
-            Stepper(value: $settings.mongoMonitoring.databaseRetentionDays, in: 1...3650, step: 1) {
+            Stepper(value: $settings.mongoMonitoring.databaseRetentionDays, in: 1...3_650, step: 1) {
                 Text("Database retention window: \(settings.mongoMonitoring.clampedDatabaseRetentionDays) day(s)")
             }
             .disabled(!settings.mongoMonitoring.enabled || !settings.mongoMonitoring.enableMongoWrites)
 
-            Stepper(value: $settings.mongoMonitoring.localTranscriptRetentionDays, in: 1...3650, step: 1) {
+            Stepper(value: $settings.mongoMonitoring.localTranscriptRetentionDays, in: 1...3_650, step: 1) {
                 Text("Local transcript retention window: \(settings.mongoMonitoring.clampedLocalTranscriptRetentionDays) day(s)")
             }
             .disabled(!settings.mongoMonitoring.enabled)
@@ -2805,6 +2845,8 @@ private struct KeystrokesTabPane: View {
     let selectedProfileAutomationMode: GeminiLaunchMode?
     let selectedProfileAutomationEnabled: Bool?
     let defaultHotkeyPrefix: String
+    let canToggleAutomation: Bool
+    let setSelectedProfileAutomation: (_ enabled: Bool) -> Void
 
     private var supportsRunnerHotkeys: Bool {
         selectedProfileAutomationMode == .automationRunner
@@ -2822,6 +2864,7 @@ private struct KeystrokesTabPane: View {
         switch selectedProfileAutomationMode {
         case .automationRunner:
             return "Active for selected profile: automation runner mode."
+
         case .directWrapper:
             return "Selected profile is in direct wrapper mode; PTY hotkeys are not available."
         }
@@ -2838,7 +2881,9 @@ private struct KeystrokesTabPane: View {
         [
             ("⌘ ⇧ R", "Refresh diagnostics"),
             ("⌘ ⇧ L", "Relaunch last launch"),
-            ("⌘ ⇧ A", "Toggle automation for selected profile")
+            ("⌘ ⇧ A", "Toggle automation for selected profile"),
+            ("⌘ ⇧ O", "Enable automation for selected profile"),
+            ("⌘ ⇧ X", "Disable automation for selected profile")
         ]
     }
 
@@ -2919,6 +2964,31 @@ private struct KeystrokesTabPane: View {
                     }
                 }
 
+                GroupBox("Automation quick actions") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Apply automation changes for the selected Gemini profile.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Button("Enable Automation") {
+                                setSelectedProfileAutomation(true)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!canToggleAutomation || selectedProfileAutomationEnabled == true)
+                            Button("Disable Automation") {
+                                setSelectedProfileAutomation(false)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!canToggleAutomation || selectedProfileAutomationEnabled == false)
+                            Button("Toggle Automation") {
+                                setSelectedProfileAutomation(!(selectedProfileAutomationEnabled ?? false))
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!canToggleAutomation)
+                        }
+                    }
+                }
+
                 GroupBox("Gemini automation hotkeys") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(automationModeDescription)
@@ -2980,6 +3050,13 @@ private struct KeystrokesTabPane: View {
                                 Text(defaultHotkeyPrefix)
                                     .font(.system(.caption, design: .monospaced))
                             }
+                        }
+                        HStack {
+                            Text("Automation state")
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text(selectedProfileStateLine)
+                                .font(.system(.caption, design: .monospaced))
                         }
                     }
                     .font(.caption)
@@ -3254,7 +3331,7 @@ private struct LaunchCenterPane: View {
     private var launchPreflightCard: some View {
         GroupBox("Preflight") {
             VStack(alignment: .leading, spacing: 8) {
-                if preview.diagnostics.errors.isEmpty && preview.diagnostics.warnings.isEmpty {
+                if preview.diagnostics.errors.isEmpty, preview.diagnostics.warnings.isEmpty {
                     Label("Everything needed for the current plan looks ready.", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 } else {
@@ -3341,7 +3418,7 @@ private struct DiagnosticsTabPane: View {
                             Label(item, systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
                         }
-                        if preview.diagnostics.errors.isEmpty && preview.diagnostics.warnings.isEmpty {
+                        if preview.diagnostics.errors.isEmpty, preview.diagnostics.warnings.isEmpty {
                             Label("No issues detected.", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                         }

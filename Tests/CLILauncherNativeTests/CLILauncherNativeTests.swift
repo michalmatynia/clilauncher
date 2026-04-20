@@ -1,6 +1,6 @@
 import Foundation
-import XCTest
 @testable import GeminiLauncherNative
+import XCTest
 
 final class MongoConnectionDescriptorTests: XCTestCase {
     func testLocalMongoConnectionsAreClassifiedAsLocal() {
@@ -57,7 +57,7 @@ final class MongoMonitoringSettingsTests: XCTestCase {
     func testMonitoringClampsAreApplied() {
         var settings = MongoMonitoringSettings()
         settings.recentHistoryLimit = -2
-        settings.recentHistoryLookbackDays = 1000
+        settings.recentHistoryLookbackDays = 1_000
         settings.detailEventLimit = 1
         settings.detailChunkLimit = 1_000
         settings.transcriptPreviewByteLimit = 1
@@ -70,7 +70,7 @@ final class MongoMonitoringSettingsTests: XCTestCase {
         XCTAssertEqual(settings.clampedDetailChunkLimit, 500)
         XCTAssertEqual(settings.clampedTranscriptPreviewByteLimit, 10_000)
         XCTAssertEqual(settings.clampedDatabaseRetentionDays, 1)
-        XCTAssertEqual(settings.clampedLocalTranscriptRetentionDays, 3650)
+        XCTAssertEqual(settings.clampedLocalTranscriptRetentionDays, 3_650)
     }
 }
 
@@ -145,13 +145,13 @@ final class AiderCommandBuilderTests: XCTestCase {
         profile.aiderNotify = true
         profile.aiderDarkTheme = false
         profile.workingDirectory = "/tmp"
-        
+
         // Mocking resolveProviderExecutableOrThrow to return the aiderExecutable
         // In real tests we might need to mock ExecutableResolver or actually have aider installed.
         // Since we are testing CommandBuilder, let's assume it finds it if we give absolute path.
-        
+
         let result = try builder.buildCommand(profile: profile, settings: AppSettings())
-        
+
         // The command now includes 'cd ... && ...'
         XCTAssertTrue(result.contains("cd '/tmp'"))
         XCTAssertTrue(result.contains("exec '/Users/michalmatynia/.local/bin/aider'"))
@@ -160,5 +160,31 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertTrue(result.contains("--no-auto-commit"))
         XCTAssertTrue(result.contains("--notify"))
         XCTAssertTrue(result.contains("--light-mode"))
+    }
+
+    func testGeminiEnvironmentPrioritizesInitialModelInModelChain() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiModelChain = "gemini-2.5-pro,gemini-1.5-flash,gemini-flash"
+        profile.geminiInitialModel = "gemini-1.5-flash"
+
+        let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+        XCTAssertEqual(
+            environment["MODEL_CHAIN"],
+            "gemini-1.5-flash,gemini-2.5-pro,gemini-flash"
+        )
+    }
+
+    func testGeminiEnvironmentIncludesInitialPromptOverride() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiInitialPrompt = "Explain the architecture first."
+
+        let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+        XCTAssertEqual(environment["GEMINI_INITIAL_PROMPT"], "Explain the architecture first.")
     }
 }

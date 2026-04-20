@@ -65,9 +65,19 @@ swift run CLILauncherNative
 ## Quality and checks
 
 ```bash
+./Scripts/install-swift-tools.sh   # install SwiftDX tooling (swiftlint, swiftformat, swift-format)
+# Configure with env vars:
+#   SWIFTLINT_AGGRESSIVE=1 (default): enable all SwiftLint rules
+#   SWIFTLINT_REPORTER=xcode|json|github-actions-logging|...: reporting format
+# .swiftlint-baseline.json is committed and used automatically when present.
+# Run `make lint-baseline` after a rule/config/format change to refresh it.
 make lint       # run SwiftLint (./Scripts/lint.sh)
+make lint-baseline # (re)generate .swiftlint-baseline.json from current codebase
+make format     # auto-format code with swiftformat + swift-format
+make format-check # verify formatting-only pass (CI-safe)
+make smoke      # run smoke checks: automation detection, JS syntax, swift build
 make test       # run swift test
-make ci         # lint + test
+make ci         # lint + smoke + test
 ```
 
 ## Repo setup

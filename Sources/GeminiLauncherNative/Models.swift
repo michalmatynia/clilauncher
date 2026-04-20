@@ -4,8 +4,9 @@ extension Notification.Name {
     static let refreshDiagnosticsRequested = Notification.Name("refreshDiagnosticsRequested")
     static let relaunchLastRequested = Notification.Name("relaunchLastRequested")
     static let toggleAutomationRequested = Notification.Name("toggleAutomationRequested")
+    static let enableAutomationRequested = Notification.Name("enableAutomationRequested")
+    static let disableAutomationRequested = Notification.Name("disableAutomationRequested")
 }
-
 
 enum AppPaths {
     static let folderName = "CLILauncherNativeV24"
@@ -187,6 +188,7 @@ extension AgentKind {
                 installDocumentation: "https://github.com/google-gemini/gemini-cli",
                 riskLevel: .low
             )
+
         case .copilot:
             return ProviderDefinition(
                 kind: .copilot,
@@ -228,6 +230,7 @@ extension AgentKind {
                 installDocumentation: "https://github.com/features/copilot",
                 riskLevel: .medium
             )
+
         case .codex:
             return ProviderDefinition(
                 kind: .codex,
@@ -260,6 +263,7 @@ extension AgentKind {
                 installDocumentation: "https://openai.com/codex",
                 riskLevel: .medium
             )
+
         case .claudeBypass:
             return ProviderDefinition(
                 kind: .claudeBypass,
@@ -291,6 +295,7 @@ extension AgentKind {
                 installDocumentation: "https://docs.anthropic.com/en/docs/claude-code",
                 riskLevel: .medium
             )
+
         case .kiroCLI:
             return ProviderDefinition(
                 kind: .kiroCLI,
@@ -322,6 +327,7 @@ extension AgentKind {
                 installDocumentation: "https://github.com/iambenf/kiro-cli",
                 riskLevel: .low
             )
+
         case .ollamaLaunch:
             return ProviderDefinition(
                 kind: .ollamaLaunch,
@@ -357,6 +363,7 @@ extension AgentKind {
                 installDocumentation: "https://ollama.com",
                 riskLevel: .low
             )
+
         case .aider:
             return ProviderDefinition(
                 kind: .aider,
@@ -401,26 +408,35 @@ extension AgentKind {
             switch profile.geminiLaunchMode {
             case .automationRunner:
                 return ["Gemini automation mode uses the configured automation runner and Node. The launcher will fall back to direct wrapper mode when the runner is unavailable."]
+
             case .directWrapper:
                 return []
             }
+
         case .copilot:
             switch profile.copilotMode {
             case .autopilotYolo:
                 return ["Copilot Autopilot + YOLO may run across multiple premium requests. Use in trusted workspaces only."]
+
             case .autopilot:
                 return ["Copilot Autopilot may continue through multiple tool calls. Keep tasks narrow."]
+
             default:
                 return []
             }
+
         case .codex:
             return profile.codexMode == .fullAuto ? ["Codex Full Auto can perform broad file edits. Review final changes before continuing."] : []
+
         case .claudeBypass:
             return ["Claude Bypass skips permission prompts. Use only in trusted workspaces."]
+
         case .ollamaLaunch:
             return ["Ollama Launch requires an installed Ollama binary and a valid integration."]
+
         case .aider:
             return profile.aiderAutoCommit ? [] : ["Aider is configured without auto-commit. You will need to commit changes manually."]
+
         default:
             return []
         }
@@ -454,8 +470,10 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .stable:
             return "bolt.fill"
+
         case .preview:
             return "sparkles"
+
         case .nightly:
             return "moon.stars.fill"
         }
@@ -498,6 +516,7 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .stable:
             return ["gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
+
         case .preview, .nightly:
             return ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
         }
@@ -564,7 +583,6 @@ enum AutoContinueMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-
 enum LaunchBehaviorPreset: String, CaseIterable, Codable, Identifiable {
     case safe
     case balanced
@@ -588,7 +606,6 @@ enum LaunchBehaviorPreset: String, CaseIterable, Codable, Identifiable {
         }
     }
 }
-
 
 enum WorkspaceCompanionApp: String, CaseIterable, Codable, Identifiable, Sendable {
     case finder
@@ -756,14 +773,13 @@ enum LogLevel: String, Codable, CaseIterable, Identifiable {
 }
 
 struct EnvironmentEntry: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var key: String = ""
     var value: String = ""
 }
 
-
 struct EnvironmentPreset: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String = "Shared Environment"
     var notes: String = ""
     var entries: [EnvironmentEntry] = []
@@ -778,7 +794,7 @@ struct EnvironmentPreset: Codable, Identifiable, Equatable {
 }
 
 struct ShellBootstrapPreset: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String = "Shared Bootstrap"
     var notes: String = ""
     var command: String = ""
@@ -787,7 +803,6 @@ struct ShellBootstrapPreset: Codable, Identifiable, Equatable {
         command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-
 
 enum TerminalTranscriptCaptureMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case outputOnly = "output_only"
@@ -818,7 +833,7 @@ struct MongoMonitoringSettings: Codable, Equatable, Sendable {
     var mongodExecutable: String = "mongod"
     var scriptExecutable: String = "/usr/bin/script"
     var pollingIntervalMs: Int = 700
-    var previewCharacterLimit: Int = 1200
+    var previewCharacterLimit: Int = 1_200
     var keepLocalTranscriptFiles: Bool = true
     var recentHistoryLimit: Int = 50
     var recentHistoryLookbackDays: Int = 7
@@ -843,7 +858,7 @@ struct MongoMonitoringSettings: Codable, Equatable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
-        let defaults = MongoMonitoringSettings()
+        let defaults = Self()
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         enabled = try container.decodeDefault(Bool.self, forKey: .enabled, default: defaults.enabled)
@@ -919,11 +934,11 @@ struct MongoMonitoringSettings: Codable, Equatable, Sendable {
     }
 
     var clampedDatabaseRetentionDays: Int {
-        max(1, min(3650, databaseRetentionDays))
+        max(1, min(3_650, databaseRetentionDays))
     }
 
     var clampedLocalTranscriptRetentionDays: Int {
-        max(1, min(3650, localTranscriptRetentionDays))
+        max(1, min(3_650, localTranscriptRetentionDays))
     }
 }
 
@@ -964,27 +979,27 @@ enum TerminalMonitorStatus: String, CaseIterable, Codable, Identifiable, Sendabl
 }
 
 struct TerminalMonitorSession: Codable, Identifiable, Equatable, Sendable {
-    var id: UUID = UUID()
+    var id = UUID()
     var profileID: UUID?
     var profileName: String
     var agentKind: AgentKind
-    var accountIdentifier: String? = nil
+    var accountIdentifier: String?
     var prompt: String = ""
     var workingDirectory: String
     var transcriptPath: String
     var launchCommand: String
     var captureMode: TerminalTranscriptCaptureMode
-    var startedAt: Date = Date()
-    var lastActivityAt: Date? = nil
-    var endedAt: Date? = nil
+    var startedAt = Date()
+    var lastActivityAt: Date?
+    var endedAt: Date?
     var chunkCount: Int = 0
     var byteCount: Int = 0
     var status: TerminalMonitorStatus = .prepared
     var lastPreview: String = ""
     var lastDatabaseMessage: String = ""
-    var lastError: String? = nil
-    var statusReason: String? = nil
-    var exitCode: Int? = nil
+    var lastError: String?
+    var statusReason: String?
+    var exitCode: Int?
     var isHistorical: Bool = false
     var isYolo: Bool = false
 
@@ -1009,8 +1024,8 @@ struct TerminalSessionEvent: Codable, Identifiable, Equatable, Sendable {
     var eventType: String
     var status: TerminalMonitorStatus
     var eventAt: Date
-    var message: String? = nil
-    var metadataJSON: String? = nil
+    var message: String?
+    var metadataJSON: String?
 }
 
 struct TerminalTranscriptChunk: Codable, Identifiable, Equatable, Sendable {
@@ -1026,11 +1041,11 @@ struct TerminalTranscriptChunk: Codable, Identifiable, Equatable, Sendable {
 
 struct TerminalMonitorSessionDetails: Codable, Equatable, Sendable {
     var sessionID: UUID
-    var loadedAt: Date = Date()
+    var loadedAt = Date()
     var sessionStatus: TerminalMonitorStatus
     var sessionChunkCount: Int
     var sessionByteCount: Int
-    var sessionEndedAt: Date? = nil
+    var sessionEndedAt: Date?
     var transcriptText: String = ""
     var transcriptSourceDescription: String = ""
     var transcriptTruncated: Bool = false
@@ -1060,12 +1075,12 @@ struct MongoStorageSummary: Codable, Equatable, Sendable {
     var sessionTableBytes: Int64 = 0
     var chunkTableBytes: Int64 = 0
     var eventTableBytes: Int64 = 0
-    var oldestSessionAt: Date? = nil
-    var newestSessionAt: Date? = nil
+    var oldestSessionAt: Date?
+    var newestSessionAt: Date?
     var transcriptFileCount: Int = 0
     var transcriptFileBytes: Int64 = 0
-    var oldestTranscriptFileAt: Date? = nil
-    var newestTranscriptFileAt: Date? = nil
+    var oldestTranscriptFileAt: Date?
+    var newestTranscriptFileAt: Date?
 
     var totalDatabaseBytes: Int64 {
         sessionTableBytes + chunkTableBytes + eventTableBytes
@@ -1081,7 +1096,7 @@ struct MongoStorageSummary: Codable, Equatable, Sendable {
 }
 
 struct MongoPruneSummary: Codable, Equatable, Sendable {
-    var executedAt: Date = Date()
+    var executedAt = Date()
     var cutoffDate: Date
     var deletedSessions: Int = 0
     var deletedChunks: Int = 0
@@ -1104,14 +1119,14 @@ typealias PostgresStorageSummary = MongoStorageSummary
 typealias PostgresPruneSummary = MongoPruneSummary
 
 struct WorkspaceBookmark: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String = "New Bookmark"
     var path: String = FileManager.default.homeDirectoryForCurrentUser.path
     var tags: [String] = []
     var notes: String = ""
     var defaultProfileID: UUID?
-    var createdAt: Date = Date()
-    var lastUsedAt: Date? = nil
+    var createdAt = Date()
+    var lastUsedAt: Date?
 
     var expandedPath: String {
         NSString(string: path).expandingTildeInPath
@@ -1119,7 +1134,7 @@ struct WorkspaceBookmark: Codable, Identifiable, Equatable {
 }
 
 struct LaunchWorkbench: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String = "New Workbench"
     var notes: String = ""
     var tags: [String] = []
@@ -1127,9 +1142,9 @@ struct LaunchWorkbench: Codable, Identifiable, Equatable {
     var startupDelayMs: Int = 300
     var postLaunchActionHints: [String] = []
     var profileIDs: [UUID] = []
-    var sharedBookmarkID: UUID? = nil
-    var createdAt: Date = Date()
-    var lastLaunchedAt: Date? = nil
+    var sharedBookmarkID: UUID?
+    var createdAt = Date()
+    var lastLaunchedAt: Date?
 
     var tagSummary: String {
         tags.joined(separator: ", ")
@@ -1166,7 +1181,7 @@ struct ObservabilitySettings: Codable, Equatable {
     }
 
     init(from decoder: Decoder) throws {
-        let defaults = ObservabilitySettings()
+        let defaults = Self()
         let container = try decoder.container(keyedBy: CodingKeys.self)
         verboseLogging = try container.decodeDefault(Bool.self, forKey: .verboseLogging, default: defaults.verboseLogging)
         persistLogsToDisk = try container.decodeDefault(Bool.self, forKey: .persistLogsToDisk, default: defaults.persistLogsToDisk)
@@ -1193,8 +1208,8 @@ struct AppSettings: Codable, Equatable {
     var confirmBeforeLaunch: Bool = true
     var maxHistoryItems: Int = 100
     var maxBookmarks: Int = 60
-    var mongoMonitoring: MongoMonitoringSettings = MongoMonitoringSettings()
-    var observability: ObservabilitySettings = ObservabilitySettings()
+    var mongoMonitoring = MongoMonitoringSettings()
+    var observability = ObservabilitySettings()
     var environmentPresets: [EnvironmentPreset] = []
     var shellBootstrapPresets: [ShellBootstrapPreset] = []
 
@@ -1212,7 +1227,7 @@ struct AppSettings: Codable, Equatable {
     }
 
     init(from decoder: Decoder) throws {
-        let defaults = AppSettings()
+        let defaults = Self()
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         defaultWorkingDirectory = try container.decodeDefault(String.self, forKey: .defaultWorkingDirectory, default: defaults.defaultWorkingDirectory)
@@ -1304,12 +1319,11 @@ enum LaunchTemplateCatalog {
             id: id,
             title: definition.defaultTemplateTitle,
             systemImage: definition.systemImage,
-            kind: kind,
-            mutate: { profile in
+            kind: kind
+        ) { profile in
                 definition.defaultProfileMutation?(&profile)
                 mutates?(&profile)
-            }
-        )
+        }
     }
 
     private static func quickTemplate(for flavor: GeminiFlavor, idSuffix: String? = nil) -> LaunchTemplate {
@@ -1350,11 +1364,10 @@ enum LaunchTemplateCatalog {
             .map { defaultTemplate(for: $0) }
             .sorted { $0.title < $1.title }
         templates.append(contentsOf: nonGeminiKinds.map { kind in
-            return defaultTemplate(for: kind, id: "default-\(kind.id)")
+            defaultTemplate(for: kind, id: "default-\(kind.id)")
         })
         return templates
     }
-
 
     static func defaultProfiles(using settings: AppSettings) -> [LaunchProfile] {
         defaultTemplates.map { $0.buildProfile(using: settings) }
@@ -1362,10 +1375,10 @@ enum LaunchTemplateCatalog {
 
     static func cautions(for profile: LaunchProfile) -> [String] {
         quickLaunchTemplates
-            .first(where: { $0.agentKind == profile.agentKind })?
+            .first { $0.agentKind == profile.agentKind }?
             .cautions(for: profile) ??
         defaultTemplates
-            .first(where: { $0.agentKind == profile.agentKind })?
+            .first { $0.agentKind == profile.agentKind }?
             .cautions(for: profile) ??
         []
     }
@@ -1397,9 +1410,9 @@ struct WorkbenchTemplate: Identifiable, Sendable {
 enum WorkbenchTemplateCatalog {
     private static func firstProfileID(_ profiles: [LaunchProfile], kind: AgentKind, flavor: GeminiFlavor? = nil) -> UUID? {
         if let flavor {
-            return profiles.first(where: { $0.agentKind == kind && $0.geminiFlavor == flavor })?.id
+            return profiles.first { $0.agentKind == kind && $0.geminiFlavor == flavor }?.id
         }
-        return profiles.first(where: { $0.agentKind == kind })?.id
+        return profiles.first { $0.agentKind == kind }?.id
     }
 
     private static func template(
@@ -1438,7 +1451,7 @@ enum WorkbenchTemplateCatalog {
                 preview,
                 firstProfileID(profiles, kind: .codex),
                 firstProfileID(profiles, kind: .copilot)
-            ].compactMap { $0 }
+            ].compactMap(\.self)
         },
         template(
             id: "wb-nightly-codex",
@@ -1463,7 +1476,7 @@ enum WorkbenchTemplateCatalog {
             postLaunchActionHints: ["Consider using stricter autopilot limits for review runs."]
         ) { profiles in
             guard let claude = firstProfileID(profiles, kind: .claudeBypass) else { return [] }
-            return [claude, firstProfileID(profiles, kind: .copilot)].compactMap { $0 }
+            return [claude, firstProfileID(profiles, kind: .copilot)].compactMap(\.self)
         }
     ]
 
@@ -1475,7 +1488,7 @@ enum WorkbenchTemplateCatalog {
 }
 
 struct LaunchProfile: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String = "New Profile"
     var isFavorite: Bool = false
     var tags: [String] = []
@@ -1492,8 +1505,8 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var openWorkspaceInVSCodeOnLaunch: Bool = false
     var tabLaunchDelayMs: Int = 300
     var environmentEntries: [EnvironmentEntry] = []
-    var environmentPresetID: UUID? = nil
-    var bootstrapPresetID: UUID? = nil
+    var environmentPresetID: UUID?
+    var bootstrapPresetID: UUID?
 
     var autoLaunchCompanions: Bool = false
     var companionProfileIDs: [UUID] = []
@@ -1505,6 +1518,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiISOHome: String = GeminiFlavor.preview.defaultISOHome
     var geminiInitialModel: String = GeminiFlavor.preview.defaultInitialModel
     var geminiModelChain: String = GeminiFlavor.preview.defaultModelChain
+    var geminiInitialPrompt: String = ""
     var geminiResumeLatest: Bool = true
     var geminiKeepTryMax: Int = 25
     var geminiAutoContinueMode: AutoContinueMode = .promptOnly
@@ -1516,7 +1530,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiQuietChildNodeWarnings: Bool = true
     var geminiRawOutput: Bool = false
     var geminiManualOverrideMs: Int = 20_000
-    var geminiCapacityRetryMs: Int = 5000
+    var geminiCapacityRetryMs: Int = 5_000
     var geminiHotkeyPrefix: String = "ctrl-g"
     var geminiAutomationRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var nodeExecutable: String = "node"
@@ -1614,16 +1628,22 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         switch agentKind {
         case .copilot:
             configuredExecutable = copilotExecutable
+
         case .codex:
             configuredExecutable = codexExecutable
+
         case .claudeBypass:
             configuredExecutable = claudeExecutable
+
         case .kiroCLI:
             configuredExecutable = kiroExecutable
+
         case .ollamaLaunch:
             configuredExecutable = ollamaExecutable
+
         case .aider:
             configuredExecutable = aiderExecutable
+
         case .gemini:
             configuredExecutable = geminiWrapperCommand
         }
@@ -1638,7 +1658,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
 
         for alias in aliases {
             let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedAlias.isEmpty && !candidates.contains(trimmedAlias) {
+            if !trimmedAlias.isEmpty, !candidates.contains(trimmedAlias) {
                 candidates.append(trimmedAlias)
             }
         }
@@ -1695,46 +1715,55 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
                 geminiAutoContinueMode = .off
                 geminiKeepTryMax = 1
                 geminiNeverSwitch = true
+
             case .balanced:
                 geminiAutomationEnabled = true
                 geminiAutoAllowSessionPermissions = true
                 geminiAutoContinueMode = .promptOnly
                 geminiKeepTryMax = 25
                 geminiNeverSwitch = false
+
             case .aggressive:
                 geminiAutomationEnabled = true
                 geminiAutoAllowSessionPermissions = true
                 geminiAutoContinueMode = .yolo
-                geminiKeepTryMax = 1000
+                geminiKeepTryMax = 1_000
                 geminiNeverSwitch = false
                 geminiYolo = true
             }
+
         case .copilot:
             switch preset {
             case .safe: copilotMode = .plan
             case .balanced: copilotMode = .interactive
             case .aggressive: copilotMode = .autopilotYolo
             }
+
         case .codex:
             switch preset {
             case .safe: codexMode = .suggest
             case .balanced: codexMode = .autoEdit
             case .aggressive: codexMode = .fullAuto
             }
+
         case .claudeBypass:
             break
+
         case .kiroCLI:
             switch preset {
             case .safe, .balanced: kiroMode = .interactive
             case .aggressive: kiroMode = .chatResume
             }
+
         case .ollamaLaunch:
             switch preset {
             case .safe, .balanced:
                 ollamaConfigOnly = false
+
             case .aggressive:
                 ollamaConfigOnly = true
             }
+
         case .aider:
             switch preset {
             case .safe: aiderMode = .ask
@@ -1744,8 +1773,8 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         }
     }
 
-    static func starter(kind: AgentKind, settings: AppSettings) -> LaunchProfile {
-        var profile = LaunchProfile()
+    static func starter(kind: AgentKind, settings: AppSettings) -> Self {
+        var profile = Self()
         profile.agentKind = kind
         profile.applyKindDefaults(settings: settings)
         return profile
@@ -1755,7 +1784,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         case id, name, isFavorite, tags, notes
         case agentKind, workingDirectory, terminalApp, iTermProfile, openMode, extraCLIArgs, shellBootstrapCommand, openWorkspaceInFinderOnLaunch, openWorkspaceInVSCodeOnLaunch, tabLaunchDelayMs, environmentEntries, environmentPresetID, bootstrapPresetID
         case autoLaunchCompanions, companionProfileIDs
-        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiYolo, geminiSetHomeToIso, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiCapacityRetryMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
+        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiInitialPrompt, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiYolo, geminiSetHomeToIso, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiCapacityRetryMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
         case copilotExecutable, copilotMode, copilotModel, copilotHome, copilotInitialPrompt, copilotMaxAutopilotContinues
         case codexExecutable, codexMode, codexModel
         case claudeExecutable, claudeModel
@@ -1766,7 +1795,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     init() {}
 
     init(from decoder: Decoder) throws {
-        let defaults = LaunchProfile()
+        let defaults = Self()
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         id = try container.decodeDefault(UUID.self, forKey: .id, default: defaults.id)
@@ -1797,6 +1826,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         geminiISOHome = try container.decodeDefault(String.self, forKey: .geminiISOHome, default: defaults.geminiISOHome)
         geminiInitialModel = try container.decodeDefault(String.self, forKey: .geminiInitialModel, default: defaults.geminiInitialModel)
         geminiModelChain = try container.decodeDefault(String.self, forKey: .geminiModelChain, default: defaults.geminiModelChain)
+        geminiInitialPrompt = try container.decodeDefault(String.self, forKey: .geminiInitialPrompt, default: defaults.geminiInitialPrompt)
         geminiResumeLatest = try container.decodeDefault(Bool.self, forKey: .geminiResumeLatest, default: defaults.geminiResumeLatest)
         geminiKeepTryMax = try container.decodeDefault(Int.self, forKey: .geminiKeepTryMax, default: defaults.geminiKeepTryMax)
         geminiAutoContinueMode = try container.decodeDefault(AutoContinueMode.self, forKey: .geminiAutoContinueMode, default: defaults.geminiAutoContinueMode)
@@ -1844,7 +1874,7 @@ struct LaunchResult: Equatable, Sendable {
 }
 
 struct PlannedLaunchItem: Identifiable, Equatable, Sendable {
-    var id: UUID = UUID()
+    var id = UUID()
     var profileID: UUID
     var profileName: String
     var command: String
@@ -1852,7 +1882,7 @@ struct PlannedLaunchItem: Identifiable, Equatable, Sendable {
     var terminalApp: TerminalApp = .iterm2
     var iTermProfile: String
     var description: String
-    var monitorSessionID: UUID? = nil
+    var monitorSessionID: UUID?
 }
 
 struct PostLaunchAction: Identifiable, Equatable, Sendable {
@@ -1880,8 +1910,8 @@ struct PlannedLaunch: Equatable, Sendable {
 }
 
 struct LaunchHistoryItem: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
-    var timestamp: Date = Date()
+    var id = UUID()
+    var timestamp = Date()
     var profileID: UUID?
     var profileName: String
     var description: String
@@ -1929,23 +1959,23 @@ struct PersistedState: Codable {
 }
 
 struct LogEntry: Identifiable, Codable, Equatable {
-    var id: UUID = UUID()
-    var timestamp: Date = Date()
+    var id = UUID()
+    var timestamp = Date()
     var level: LogLevel
     var category: LogCategory = .app
     var message: String
-    var details: String? = nil
+    var details: String?
     var repeatCount: Int = 1
 }
 
 struct ToolStatus: Identifiable, Equatable, Codable, Sendable {
-    var id: UUID = UUID()
+    var id = UUID()
     var name: String
     var requested: String
     var resolved: String?
     var detail: String
     var isError: Bool
-    var resolutionSource: String? = nil
+    var resolutionSource: String?
 }
 
 struct DiagnosticITermSnapshot: Codable {
@@ -1965,7 +1995,7 @@ struct MonitoringDiagnosticSnapshot: Codable {
 }
 
 struct ApplicationDiagnosticReport: Codable {
-    var createdAt: Date = Date()
+    var createdAt = Date()
     var appSupportDirectory: String
     var stateFilePath: String
     var logFilePath: String

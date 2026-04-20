@@ -1,0 +1,23 @@
+{
+  "name": "clilauncher",
+  "version": "1.0.0",
+  "description": "A macOS native launcher for running multiple AI CLI tools (and local tooling companions) with resilient startup sequencing and runtime diagnostics.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michalmatynia/clilauncher.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/michalmatynia/clilauncher/issues"
+  },
+  "homepage": "https://github.com/michalmatynia/clilauncher#readme",
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.12"
+  }
+}

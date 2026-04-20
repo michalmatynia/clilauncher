@@ -2,6 +2,12 @@ import AppKit
 import Combine
 import Foundation
 
+private let sessionPayloadJSONDecoder: JSONDecoder = {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .secondsSince1970
+    return decoder
+}()
+
 private struct PreparedMonitoringContext: Sendable {
     var session: TerminalMonitorSession
     var wrappedCommand: String
@@ -115,10 +121,7 @@ private struct DatabaseSessionRow: Decodable {
               let payloadData = rawPayload.data(using: .utf8) else {
             return nil
         }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(TerminalMonitorSession.self, from: payloadData)
+        return try? sessionPayloadJSONDecoder.decode(TerminalMonitorSession.self, from: payloadData)
     }
 }
 
@@ -210,8 +213,8 @@ private struct DatabasePruneSummaryRow: Decodable {
 private struct LocalTranscriptInventory: Sendable {
     var fileCount: Int = 0
     var totalBytes: Int64 = 0
-    var oldestFileAt: Date? = nil
-    var newestFileAt: Date? = nil
+    var oldestFileAt: Date?
+    var newestFileAt: Date?
 }
 
 private struct LocalTranscriptPruneResult: Sendable {
@@ -343,18 +346,28 @@ struct MonitoringDiagnosticsService {
 }
 
 actor MongoMonitoringWriter {
+    private static let sessionDocumentEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return encoder
+    }()
+
+    private static let mongoRowDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return decoder
+    }()
+
     private let commandBuilder = CommandBuilder()
     private var initializedFingerprint: String?
 
     private func sessionDocument(from session: TerminalMonitorSession) -> [String: Any] {
-        let lastActivityMillis = session.lastActivityAt.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let endedAtMillis = session.endedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let lastActivityMillis = session.lastActivityAt.map { Int64($0.timeIntervalSince1970 * 1_000) }
+        let endedAtMillis = session.endedAt.map { Int64($0.timeIntervalSince1970 * 1_000) }
 
         let sessionPayload: String
         do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .secondsSince1970
-            let data = try encoder.encode(session)
+            let data = try Self.sessionDocumentEncoder.encode(session)
             sessionPayload = String(data: data, encoding: .utf8) ?? "{}"
         } catch {
             sessionPayload = "{}"
@@ -380,7 +393,7 @@ actor MongoMonitoringWriter {
             "launch_command": session.launchCommand,
             "capture_mode": session.captureMode.rawValue,
             "status": session.status.rawValue,
-            "started_at": Int64(session.startedAt.timeIntervalSince1970 * 1000),
+            "started_at": Int64(session.startedAt.timeIntervalSince1970 * 1_000),
             "last_activity_at": nullableMongoValue(lastActivityMillis),
             "ended_at": nullableMongoValue(endedAtMillis),
             "chunk_count": session.chunkCount,
@@ -516,7 +529,7 @@ actor MongoMonitoringWriter {
             "chunk_index": chunkIndex,
             "source": "terminal_transcript",
             "prompt": prompt,
-            "captured_at": Int64(capturedAt.timeIntervalSince1970 * 1000),
+            "captured_at": Int64(capturedAt.timeIntervalSince1970 * 1_000),
             "byte_count": data.count,
             "preview_text": preview,
             "raw_base64": data.base64EncodedString(),
@@ -602,7 +615,7 @@ actor MongoMonitoringWriter {
         resolvedSession.endedAt = endedAt ?? session.endedAt
         resolvedSession.statusReason = statusReason ?? session.statusReason
         resolvedSession.exitCode = exitCode ?? session.exitCode
-        if status == .failed && resolvedSession.lastError == nil {
+        if status == .failed, resolvedSession.lastError == nil {
             resolvedSession.lastError = statusMessage
         }
         if status == .completed || status == .failed || status == .stopped {
@@ -610,12 +623,12 @@ actor MongoMonitoringWriter {
         }
 
         let resolvedSessionPayload = sessionDocument(from: resolvedSession)
-        let endedAtMillis = resolvedSession.endedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let endedAtMillis = resolvedSession.endedAt.map { Int64($0.timeIntervalSince1970 * 1_000) }
         let payload: [String: Any] = [
             "session_id": session.id.uuidString,
             "status": resolvedSession.status.rawValue,
             "event_type": eventType,
-            "event_at": Int64(eventAt.timeIntervalSince1970 * 1000),
+            "event_at": Int64(eventAt.timeIntervalSince1970 * 1_000),
             "message": statusMessage,
             "status_reason": nullableMongoValue(resolvedSession.statusReason),
             "exit_code": nullableMongoValue(resolvedSession.exitCode),
@@ -716,7 +729,7 @@ actor MongoMonitoringWriter {
         let payload: [String: Any] = [
             "limit": safeLimit,
             "lookback_hours": safeLookbackHours,
-            "cutoff_ms": Int64((Date().addingTimeInterval(-TimeInterval(safeLookbackHours) * 3600).timeIntervalSince1970) * 1000)
+            "cutoff_ms": Int64((Date().addingTimeInterval(-TimeInterval(safeLookbackHours) * 3_600).timeIntervalSince1970) * 1_000)
         ]
 
         let script = """
@@ -897,9 +910,9 @@ actor MongoMonitoringWriter {
         }
         try ensureSchema(settings: settings)
 
-        let safeRetentionDays = max(1, min(3650, retentionDays))
+        let safeRetentionDays = max(1, min(3_650, retentionDays))
         let payload: [String: Any] = [
-            "cutoff_ms": Int64(cutoffDate.timeIntervalSince1970 * 1000),
+            "cutoff_ms": Int64(cutoffDate.timeIntervalSince1970 * 1_000),
             "retention_days": safeRetentionDays
         ]
 
@@ -958,7 +971,7 @@ actor MongoMonitoringWriter {
             return MongoPruneSummary(cutoffDate: cutoffDate)
         }
 
-        return try JSONDecoder().decode(MongoPruneSummary.self, from: Data(line.utf8))
+        return try Self.mongoRowDecoder.decode(MongoPruneSummary.self, from: Data(line.utf8))
     }
 
     func clearAllHistory(settings: MongoMonitoringSettings) throws {
@@ -1100,8 +1113,8 @@ actor MongoMonitoringWriter {
         return false
     }
 
-    private func ensureSchemaScript(settings: MongoMonitoringSettings) throws -> String {
-        let script = """
+    private func ensureSchemaScript(settings: MongoMonitoringSettings) -> String {
+        """
         (function() {
             const cfg = JSON.parse(\(mongoJSONLiteral(["cfg": mongoDatabaseName(from: settings)])));
             const targetDb = db.getSiblingDB(cfg.cfg);
@@ -1125,7 +1138,6 @@ actor MongoMonitoringWriter {
             print("MongoDB monitoring collections ready.");
         })();
         """
-        return script
     }
 
     private func makeMongoLaunchConfiguration(settings: MongoMonitoringSettings) throws -> MongoLaunchConfiguration {
@@ -1135,7 +1147,7 @@ actor MongoMonitoringWriter {
         }
         guard let components = URLComponents(string: settings.trimmedConnectionURL),
               let scheme = components.scheme?.lowercased(),
-              (scheme == "mongodb" || scheme == "mongodb+srv")
+              scheme == "mongodb" || scheme == "mongodb+srv"
         else {
             throw LauncherError.validation("Mongo connection URL must begin with mongodb:// or mongodb+srv://")
         }
@@ -1159,13 +1171,13 @@ actor MongoMonitoringWriter {
 
     private func mongoPort(from connectionURL: String) -> Int {
         guard let components = URLComponents(string: connectionURL), let port = components.port else {
-            return 27017
+            return 27_017
         }
         return port
     }
 
     private func mongoDatabaseName(from settings: MongoMonitoringSettings) -> String {
-        return mongoDatabaseName(from: settings.trimmedConnectionURL, fallback: settings.trimmedSchemaName)
+        mongoDatabaseName(from: settings.trimmedConnectionURL, fallback: settings.trimmedSchemaName)
     }
 
     private func mongoDatabaseName(from connectionString: String, fallback: String) -> String {
@@ -1184,14 +1196,14 @@ actor MongoMonitoringWriter {
         return String(first)
     }
 
-    private func parseMongoRows<T: Decodable>(_ output: String, as type: T.Type) throws -> [T] {
-        let decoder = JSONDecoder()
+    private func parseMongoRows<T: Decodable>(_ output: String, as _: T.Type) throws -> [T] {
+        guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         return try output
             .split(whereSeparator: \.isNewline)
             .map(String.init)
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .map { line in
-                try decoder.decode(T.self, from: Data(line.utf8))
+                try Self.mongoRowDecoder.decode(T.self, from: Data(line.utf8))
             }
     }
 
@@ -1223,16 +1235,22 @@ actor MongoMonitoringWriter {
         switch status {
         case .prepared:
             return "Session prepared."
+
         case .launching:
             return "Session launching."
+
         case .monitoring:
             return "Session monitoring in progress."
+
         case .idle:
             return "Session idle; no recent transcript activity."
+
         case .completed:
             return "Session completed successfully."
+
         case .failed:
             return "Session failed."
+
         case .stopped:
             return "Session stopped."
         }
@@ -1248,8 +1266,8 @@ final class TerminalMonitorStore: ObservableObject {
     @Published var lastPruneSummary: String = ""
     @Published private(set) var sessionDetailsByID: [UUID: TerminalMonitorSessionDetails] = [:]
     @Published private(set) var detailLoadingSessionIDs: Set<UUID> = []
-    @Published private(set) var storageSummary: MongoStorageSummary? = nil
-    @Published private(set) var lastPruneResult: MongoPruneSummary? = nil
+    @Published private(set) var storageSummary: MongoStorageSummary?
+    @Published private(set) var lastPruneResult: MongoPruneSummary?
     @Published private(set) var isLoadingStorageSummary: Bool = false
     @Published private(set) var isPruningStoredHistory: Bool = false
     @Published private(set) var isLoadingRecentSessions: Bool = false
@@ -1620,7 +1638,7 @@ final class TerminalMonitorStore: ObservableObject {
             let localPrune = Self.pruneTranscriptDirectory(
                 at: monitoringSettings.expandedTranscriptDirectory,
                 olderThanDays: localRetentionDays,
-                protectedPaths: self.protectedTranscriptPaths()
+                protectedPaths: protectedTranscriptPaths()
             )
             pruneSummary.deletedTranscriptFiles = localPrune.deletedFileCount
             pruneSummary.deletedTranscriptBytes = localPrune.deletedBytes
@@ -1630,7 +1648,7 @@ final class TerminalMonitorStore: ObservableObject {
                     : "No local transcript files matched the retention cutoff."
             )
 
-            let logLevel: LogLevel = notes.contains(where: { $0.localizedCaseInsensitiveContains("failed") }) ? .warning : .success
+            let logLevel: LogLevel = notes.contains { $0.localizedCaseInsensitiveContains("failed") } ? .warning : .success
 
             await MainActor.run {
                 self.lastPruneResult = pruneSummary
@@ -1708,7 +1726,7 @@ final class TerminalMonitorStore: ObservableObject {
                 loadNotes.append("No local transcript file was found.")
             }
 
-            if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites {
+            if settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites {
                 do {
                     async let fetchedEvents = writer.fetchSessionEvents(
                         sessionID: session.id,
@@ -1724,7 +1742,7 @@ final class TerminalMonitorStore: ObservableObject {
                     chunks = try await fetchedChunks
                     loadNotes.append("Loaded \(events.count) event(s) and \(chunks.count) chunk(s) from MongoDB.")
 
-                    if transcriptText.isEmpty && !chunks.isEmpty {
+                    if transcriptText.isEmpty, !chunks.isEmpty {
                         transcriptText = chunks.map(\.text).joined()
                         transcriptTruncated = session.chunkCount > chunks.count
                         transcriptSource = transcriptTruncated
@@ -1778,14 +1796,14 @@ final class TerminalMonitorStore: ObservableObject {
         let transcriptFilename = "\(timestamp)-\(profile.agentKind.rawValue)-\(sessionID.uuidString).typescript"
         let transcriptPath = (transcriptDirectory as NSString).appendingPathComponent(transcriptFilename)
         let completionMarkerPath = transcriptPath + ".exit"
-        let wrappedCommand = try wrapCommand(item.command, transcriptPath: transcriptPath, completionMarkerPath: completionMarkerPath, settings: settings)
+        let wrappedCommand = wrapCommand(item.command, transcriptPath: transcriptPath, completionMarkerPath: completionMarkerPath, settings: settings)
 
         let session = TerminalMonitorSession(
             id: sessionID,
             profileID: item.profileID,
             profileName: item.profileName,
             agentKind: profile.agentKind,
-            accountIdentifier: Self.currentAccountIdentifier(),
+            accountIdentifier: Self.currentAccountIdentifier(for: profile),
             prompt: Self.initialPromptHint(for: profile, command: item.command),
             workingDirectory: profile.expandedWorkingDirectory,
             transcriptPath: transcriptPath,
@@ -1808,7 +1826,7 @@ final class TerminalMonitorStore: ObservableObject {
         return PreparedMonitoringContext(session: session, wrappedCommand: wrappedCommand, completionMarkerPath: completionMarkerPath)
     }
 
-    private func wrapCommand(_ originalCommand: String, transcriptPath: String, completionMarkerPath: String, settings: MongoMonitoringSettings) throws -> String {
+    private func wrapCommand(_ originalCommand: String, transcriptPath: String, completionMarkerPath: String, settings: MongoMonitoringSettings) -> String {
         let builder = CommandBuilder()
         let scriptExecutable = builder.resolvedExecutable(settings.scriptExecutable) ?? settings.scriptExecutable
         let transcriptDirectory = URL(fileURLWithPath: transcriptPath).deletingLastPathComponent().path
@@ -1860,7 +1878,7 @@ final class TerminalMonitorStore: ObservableObject {
                             chunkIndex += 1
                             lastObservedWrite = Date()
                             let preview = Self.cleanedPreview(from: slice, limit: settings.previewCharacterLimit)
-                            await self.consumeChunk(
+                            await consumeChunk(
                                 sessionID: sessionID,
                                 data: slice,
                                 preview: preview,
@@ -1873,7 +1891,7 @@ final class TerminalMonitorStore: ObservableObject {
                     }
 
                     if let completion = Self.readCompletionMarker(at: context.completionMarkerPath) {
-                        await self.markCompleted(
+                        await markCompleted(
                             sessionID: sessionID,
                             completion: completion,
                             completionMarkerPath: context.completionMarkerPath,
@@ -1883,7 +1901,7 @@ final class TerminalMonitorStore: ObservableObject {
                     }
 
                     if endOffset > 0, Date().timeIntervalSince(lastObservedWrite) > idleThreshold {
-                        await self.markIdleIfNeeded(sessionID: sessionID, at: lastObservedWrite, settings: settings)
+                        await markIdleIfNeeded(sessionID: sessionID, at: lastObservedWrite, settings: settings)
                     }
 
                     if !hasNewData {
@@ -1899,7 +1917,7 @@ final class TerminalMonitorStore: ObservableObject {
                         // The wrapped script process may not have created the transcript file yet.
                         pollingDelay = min(maxPollingDelay, pollingDelay * 2)
                     } else {
-                        await self.markMonitoringFailure(
+                        await markMonitoringFailure(
                             sessionID: sessionID,
                             message: error.localizedDescription,
                             completionMarkerPath: context.completionMarkerPath,
@@ -2131,12 +2149,12 @@ final class TerminalMonitorStore: ObservableObject {
             let currentDate = Self.sessionActivityDate(session)
             var adjustedIndex = index
 
-            while adjustedIndex > 0 && currentDate > Self.sessionActivityDate(sessions[adjustedIndex - 1]) {
+            while adjustedIndex > 0, currentDate > Self.sessionActivityDate(sessions[adjustedIndex - 1]) {
                 swapSessions(at: adjustedIndex, and: adjustedIndex - 1)
                 adjustedIndex -= 1
             }
 
-            while adjustedIndex + 1 < sessions.count && currentDate < Self.sessionActivityDate(sessions[adjustedIndex + 1]) {
+            while adjustedIndex + 1 < sessions.count, currentDate < Self.sessionActivityDate(sessions[adjustedIndex + 1]) {
                 swapSessions(at: adjustedIndex, and: adjustedIndex + 1)
                 adjustedIndex += 1
             }
@@ -2306,7 +2324,7 @@ final class TerminalMonitorStore: ObservableObject {
         for case let fileURL as URL in enumerator {
             let filePath = fileURL.path
             guard !protectedPaths.contains(filePath),
-                  (isManagedTranscriptFile(fileURL) || isManagedCompletionMarkerFile(fileURL)),
+                  isManagedTranscriptFile(fileURL) || isManagedCompletionMarkerFile(fileURL),
                   let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .creationDateKey, .fileSizeKey]),
                   values.isRegularFile == true
             else {
@@ -2355,7 +2373,7 @@ final class TerminalMonitorStore: ObservableObject {
             if scalar == "\u{0000}" {
                 continue
             }
-            if scalar.value < 0x20 && scalar != "\n" && scalar != "\r" && scalar != "\t" {
+            if scalar.value < 0x20, scalar != "\n", scalar != "\r", scalar != "\t" {
                 cleaned.append(" ")
             } else {
                 cleaned.unicodeScalars.append(scalar)
@@ -2407,6 +2425,10 @@ final class TerminalMonitorStore: ObservableObject {
     }
 
     nonisolated private static func initialPromptHint(for profile: LaunchProfile, command: String) -> String {
+        if profile.agentKind == .gemini, !profile.geminiInitialPrompt.isEmpty {
+            return profile.geminiInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         let commandHint = command.trimmingCharacters(in: .whitespacesAndNewlines)
         if profile.agentKind == .copilot {
             return commandHint
@@ -2421,9 +2443,24 @@ final class TerminalMonitorStore: ObservableObject {
         return commandHint
     }
 
-    nonisolated private static func currentAccountIdentifier() -> String {
+    nonisolated private static func currentAccountIdentifier(for profile: LaunchProfile) -> String {
+        if let configured = candidateAccountFromEnvironment()
+            ?? candidateAccountFromGeminiConfig(profile: profile)
+            ?? candidateAccountFromCloudSDK() {
+            return configured
+        }
+        return NSUserName()
+    }
+
+    nonisolated private static func candidateAccountFromEnvironment() -> String? {
         let environment = ProcessInfo.processInfo.environment
         let candidates = [
+            environment["GEMINI_ACCOUNT"],
+            environment["GEMINI_USER"],
+            environment["GEMINI_EMAIL"],
+            environment["GOOGLE_ACCOUNT"],
+            environment["GOOGLE_EMAIL"],
+            environment["GCP_ACCOUNT"],
             environment["USER"],
             environment["LOGNAME"],
             environment["SUDO_USER"],
@@ -2431,9 +2468,172 @@ final class TerminalMonitorStore: ObservableObject {
             environment["USERNAME"]
         ]
         for candidate in candidates where !(candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return candidate!.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = candidate!.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isLikelyAccountIdentifier(normalized) {
+                return normalized
+            }
         }
-        return NSUserName()
+        return nil
+    }
+
+    nonisolated private static func candidateAccountFromGeminiConfig(profile: LaunchProfile) -> String? {
+        let candidateDirectories = [
+            profile.expandedGeminiISOHome,
+            profile.geminiFlavor == .stable ? NSString(string: "~/.gemini-home").expandingTildeInPath : nil,
+            profile.geminiFlavor == .preview ? NSString(string: "~/.gemini-preview-home").expandingTildeInPath : nil,
+            profile.geminiFlavor == .nightly ? NSString(string: "~/.gemini-nightly-home").expandingTildeInPath : nil,
+            NSString(string: "~/.config/gemini").expandingTildeInPath
+        ]
+        for directory in candidateDirectories.compactMap(\.self) {
+            let expanded = NSString(string: directory).expandingTildeInPath
+            if let account = candidateAccountFromDirectory(expanded) {
+                return account
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func candidateAccountFromCloudSDK() -> String? {
+        let candidates = [
+            "~/.config/gcloud/configurations/config_default",
+            "~/.config/gcloud/active_config",
+            "~/.config/gcloud/configurations/configurations.properties"
+        ]
+        for candidate in candidates {
+            let path = NSString(string: candidate).expandingTildeInPath
+            if let account = candidateAccountFromIniFile(at: path) {
+                return account
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func candidateAccountFromDirectory(_ directory: String) -> String? {
+        let candidateFiles = [
+            "settings.json",
+            "config.json",
+            "state.json",
+            "credential.json",
+            "credentials.json",
+            "auth.json",
+            "tokens.json",
+            "session.json"
+        ]
+
+        for candidate in candidateFiles {
+            let path = NSString(string: directory).appendingPathComponent(candidate)
+            if let account = candidateAccountFromJSONObjectFile(at: path) {
+                return account
+            }
+            if let account = candidateAccountFromIniFile(at: path) {
+                return account
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func candidateAccountFromJSONObjectFile(at path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return extractAccountIdentifier(from: data)
+    }
+
+    nonisolated private static func candidateAccountFromIniFile(at path: String) -> String? {
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        return extractAccountIdentifier(from: raw)
+    }
+
+    nonisolated private static func extractAccountIdentifier(from rawText: String) -> String? {
+        let lines = rawText
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for line in lines {
+            if let keyValueRange = line.range(of: "=") {
+                let key = String(line[..<keyValueRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let value = String(line[keyValueRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if isLikelyAccountIdentifier(value), isLikelyAccountKey(key) {
+                    return value
+                }
+            }
+        }
+
+        guard let data = rawText.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+
+        return extractAccountIdentifier(from: json)
+    }
+
+    nonisolated private static func extractAccountIdentifier(from json: Any, depth: Int = 0) -> String? {
+        guard depth <= 4 else { return nil }
+
+        if let text = json as? String {
+            if isLikelyAccountIdentifier(text) { return text }
+            return nil
+        }
+
+        if let dict = json as? [String: Any] {
+            for (rawKey, value) in dict {
+                let key = rawKey.lowercased()
+                if isLikelyAccountKey(key),
+                   let valueText = value as? String,
+                   isLikelyAccountIdentifier(valueText) {
+                    return valueText
+                }
+                if let nested = extractAccountIdentifier(from: value, depth: depth + 1) {
+                    return nested
+                }
+            }
+            return nil
+        }
+
+        if let list = json as? [Any] {
+            for item in list {
+                if let nested = extractAccountIdentifier(from: item, depth: depth + 1) {
+                    return nested
+                }
+            }
+        }
+
+        return nil
+    }
+
+    nonisolated private static func isLikelyAccountKey(_ key: String) -> Bool {
+        let normalized = key.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens: [String] = [
+            "account",
+            "user",
+            "email",
+            "username",
+            "subject",
+            "principal",
+            "sub",
+            "email_address"
+        ]
+        return tokens.contains { normalized == $0 || normalized.contains($0) }
+    }
+
+    nonisolated private static func isLikelyAccountIdentifier(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        if trimmed.contains(" ") { return false }
+        if trimmed.contains("/") { return false }
+        if trimmed.count < 3 { return false }
+        let emailComponents = trimmed.split(separator: "@")
+        if emailComponents.count == 2,
+           let local = emailComponents.first,
+           let domain = emailComponents.last,
+           !local.isEmpty,
+           domain.contains("."),
+           let firstDomainLabel = domain.split(separator: ".").first,
+           !firstDomainLabel.isEmpty {
+            return true
+        }
+
+        return trimmed.contains("_") || trimmed.contains("-") || trimmed.contains(".")
     }
 
     nonisolated private static func readCompletionMarker(at path: String) -> SessionCompletionMarker? {
@@ -2460,10 +2660,10 @@ final class TerminalMonitorStore: ObservableObject {
 
     nonisolated private static func isMissingFileError(_ error: Error) -> Bool {
         let nsError = error as NSError
-        if nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.fileReadNoSuchFile.rawValue {
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == CocoaError.fileReadNoSuchFile.rawValue {
             return true
         }
-        if nsError.domain == NSPOSIXErrorDomain && nsError.code == 2 {
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == 2 {
             return true
         }
         return false

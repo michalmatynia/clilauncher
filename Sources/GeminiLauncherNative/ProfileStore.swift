@@ -9,7 +9,7 @@ final class ProfileStore: ObservableObject {
     private var isApplyingStateNormalization = false
     private var pendingSaveTask: Task<Void, Never>?
     private static let saveDebounceNanoseconds: UInt64 = 400_000_000
-    private nonisolated(unsafe) var terminationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var terminationObserver: NSObjectProtocol?
 
     @Published var profiles: [LaunchProfile] { didSet { stateDidChange() } }
     @Published var selectedProfileID: UUID? { didSet { stateDidChange() } }
@@ -106,7 +106,7 @@ final class ProfileStore: ObservableObject {
 
     var selectedIndex: Int? {
         guard let selectedProfileID else { return nil }
-        return profiles.firstIndex(where: { $0.id == selectedProfileID })
+        return profiles.firstIndex { $0.id == selectedProfileID }
     }
 
     var selectedProfile: LaunchProfile? {
@@ -533,7 +533,7 @@ final class LaunchLogger: ObservableObject {
     }
 
     func log(_ level: LogLevel, _ message: String, category: LogCategory = .app, details: String? = nil) {
-        if level == .debug && !settings.verboseLogging {
+        if level == .debug, !settings.verboseLogging {
             return
         }
 

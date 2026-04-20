@@ -46,10 +46,13 @@ private enum MonitorSessionStatusFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all:
             return true
+
         case .active:
             return [.prepared, .launching, .monitoring, .idle].contains(session.status)
+
         case .completed:
             return session.status == .completed
+
         case .failed:
             return session.status == .failed || session.status == .stopped
         }
@@ -68,23 +71,26 @@ struct MonitoringDashboardView: View {
     @EnvironmentObject private var terminalMonitor: TerminalMonitorStore
 
     @State private var searchText: String = ""
+    @State private var debouncedSearchText: String = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var selectedSessionID: UUID?
     @State private var sourceFilter: MonitorSessionSourceFilter = .all
     @State private var statusFilter: MonitorSessionStatusFilter = .all
     @State private var showingPruneConfirmation = false
+    @State private var filteredSessionsCache: [TerminalMonitorSession] = []
+    @State private var filteredSessionIndex: [UUID: TerminalMonitorSession] = [:]
+    @State private var allLiveSessionCount = 0
+    @State private var allHistoricalSessionCount = 0
+    @State private var allCompletedSessionCount = 0
+    @State private var allFailedSessionCount = 0
 
     private var filteredSessions: [TerminalMonitorSession] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return terminalMonitor.sessions.filter { session in
-            guard sourceFilter.matches(session), statusFilter.matches(session) else { return false }
-            guard !query.isEmpty else { return true }
-            return matches(query, session: session)
-        }
+        filteredSessionsCache
     }
 
     private var selectedSession: TerminalMonitorSession? {
         guard let selectedSessionID else { return nil }
-        return terminalMonitor.sessions.first(where: { $0.id == selectedSessionID })
+        return filteredSessionIndex[selectedSessionID]
     }
 
     private var selectedDetails: TerminalMonitorSessionDetails? {
@@ -109,32 +115,11 @@ struct MonitoringDashboardView: View {
     }
 
     private var sessionCounts: (live: Int, historical: Int, completed: Int, failed: Int) {
-        var live = 0
-        var historical = 0
-        var completed = 0
-        var failed = 0
-
-        for session in terminalMonitor.sessions {
-            if session.isHistorical {
-                historical += 1
-            } else {
-                live += 1
-            }
-            switch session.status {
-            case .completed:
-                completed += 1
-            case .failed, .stopped:
-                failed += 1
-            default:
-                break
-            }
-        }
-
-        return (live: live, historical: historical, completed: completed, failed: failed)
+        (live: allLiveSessionCount, historical: allHistoricalSessionCount, completed: allCompletedSessionCount, failed: allFailedSessionCount)
     }
 
     private func matches(_ query: String, session: TerminalMonitorSession) -> Bool {
-        return session.profileName.localizedCaseInsensitiveContains(query) ||
+        session.profileName.localizedCaseInsensitiveContains(query) ||
             session.workingDirectory.localizedCaseInsensitiveContains(query) ||
             session.transcriptPath.localizedCaseInsensitiveContains(query) ||
             session.lastPreview.localizedCaseInsensitiveContains(query) ||
@@ -164,23 +149,25 @@ struct MonitoringDashboardView: View {
         .onAppear {
             terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger)
             terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger)
-            syncSelection()
+            debouncedSearchText = searchText
+            refreshFilteredSessions()
             loadSelectedDetails(forceRefresh: false)
         }
-        .onChange(of: terminalMonitor.sessions) { _ in
-            syncSelection()
+        .onDisappear {
+            searchDebounceTask?.cancel()
         }
+        .onChange(of: terminalMonitor.sessions) { _ in refreshFilteredSessions() }
         .onChange(of: store.settings.mongoMonitoring) { _ in
             terminalMonitor.refreshStorageSummary(settings: store.settings, logger: logger)
         }
         .onChange(of: searchText) { _ in
-            syncSelection()
+            debounceSearchFilter()
         }
         .onChange(of: sourceFilter) { _ in
-            syncSelection()
+            refreshFilteredSessions()
         }
         .onChange(of: statusFilter) { _ in
-            syncSelection()
+            refreshFilteredSessions()
         }
         .onChange(of: selectedSessionID) { _ in
             loadSelectedDetails(forceRefresh: false)
@@ -416,12 +403,12 @@ struct MonitoringDashboardView: View {
                 Image(systemName: session.status.systemImage)
                     .foregroundStyle(statusColor(for: session.status))
                     .frame(width: 16)
-                
+
                 Text(session.profileName)
                     .font(.headline)
-                
+
                 Spacer()
-                
+
                 if session.isHistorical {
                     Text("DB")
                         .font(.system(size: 9, weight: .bold))
@@ -517,7 +504,7 @@ struct MonitoringDashboardView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(session.profileName)
                             .font(.title2.bold())
-                        
+
                         if session.isYolo {
                             Text("YOLO")
                                 .font(.system(size: 10, weight: .bold))
@@ -859,6 +846,63 @@ struct MonitoringDashboardView: View {
         selectedSessionID = filteredSessions.first?.id
     }
 
+    private func debounceSearchFilter() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            debouncedSearchText = searchText
+            refreshFilteredSessions()
+        }
+    }
+
+    private func refreshFilteredSessions() {
+        let query = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let allSessions = terminalMonitor.sessions
+        var visible: [TerminalMonitorSession] = []
+        visible.reserveCapacity(allSessions.count)
+
+        var visibleLookup: [UUID: TerminalMonitorSession] = [:]
+        visibleLookup.reserveCapacity(allSessions.count)
+
+        var liveCount = 0
+        var historicalCount = 0
+        var completedCount = 0
+        var failedCount = 0
+
+        for session in allSessions {
+            if session.isHistorical {
+                historicalCount += 1
+            } else {
+                liveCount += 1
+            }
+
+            switch session.status {
+            case .completed:
+                completedCount += 1
+            case .failed, .stopped:
+                failedCount += 1
+            default:
+                break
+            }
+
+            let matchesSearch = query.isEmpty || matches(query, session: session)
+            guard sourceFilter.matches(session), statusFilter.matches(session), matchesSearch else {
+                continue
+            }
+
+            visibleLookup[session.id] = session
+            visible.append(session)
+        }
+
+        filteredSessionsCache = visible
+        filteredSessionIndex = visibleLookup
+        allLiveSessionCount = liveCount
+        allHistoricalSessionCount = historicalCount
+        allCompletedSessionCount = completedCount
+        allFailedSessionCount = failedCount
+        syncSelection()
+    }
+
     private func loadSelectedDetails(forceRefresh: Bool) {
         guard let session = selectedSession else { return }
         terminalMonitor.loadDetails(for: session, settings: store.settings, logger: logger, forceRefresh: forceRefresh)
@@ -947,12 +991,16 @@ struct MonitoringDashboardView: View {
         switch status {
         case .prepared, .launching:
             return .blue
+
         case .monitoring:
             return .green
+
         case .idle:
             return .orange
+
         case .completed:
             return .green
+
         case .failed, .stopped:
             return .red
         }

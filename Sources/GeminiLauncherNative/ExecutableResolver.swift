@@ -264,7 +264,7 @@ struct ExecutableResolver {
 
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
         let output = String(decoding: outputData, as: UTF8.self)
-        let lines = output.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+        let lines = output.split { $0 == "\n" || $0 == "\r" }
         guard let firstLine = lines.first else { return nil }
 
         let trimmed = String(firstLine).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -454,7 +454,7 @@ private enum ExecutableSearchContextCache {
         do {
             try process.run()
             let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline {
+            while process.isRunning, Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
             if process.isRunning {

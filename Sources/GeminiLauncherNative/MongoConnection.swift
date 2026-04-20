@@ -59,6 +59,7 @@ struct MongoConnectionDescriptor: Equatable, Sendable {
         switch normalizedHost {
         case "127.0.0.1", "::1", "localhost", "0.0.0.0":
             return true
+
         default:
             return false
         }

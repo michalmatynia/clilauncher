@@ -73,7 +73,7 @@ struct CommandBuilder {
         let executableAndArgs = try buildExecutableAndArgs(profile: profile, settings: settings)
 
         let prefix = env.isEmpty ? "" : "env " + env
-            .sorted(by: { $0.key < $1.key })
+            .sorted { $0.key < $1.key }
             .map { "\($0.key)=\(shellQuote($0.value))" }
             .joined(separator: " ") + " "
 
@@ -108,8 +108,7 @@ struct CommandBuilder {
             env["KEEP_TRY_MAX"] = String(profile.geminiKeepTryMax)
             if profile.geminiAutoContinueMode == .yolo {
                 env["AUTO_CONTINUE_MODE"] = "always"
-                env["AUTO_CONTINUE_MAX_PER_EVENT"] = "1000"
-                env["KEEP_TRY_MAX"] = "1000"
+                env["AUTO_CONTINUE_MAX_PER_EVENT"] = "20"
             } else {
                 env["AUTO_CONTINUE_MODE"] = profile.geminiAutoContinueMode.rawValue
             }
@@ -123,23 +122,36 @@ struct CommandBuilder {
             env["MANUAL_OVERRIDE_MS"] = String(profile.geminiManualOverrideMs)
             env["CAPACITY_RETRY_MS"] = String(profile.geminiCapacityRetryMs)
             env["HOTKEY_PREFIX"] = profile.geminiHotkeyPrefix
-            env["MODEL_CHAIN"] = profile.geminiModelChain
+            let initialModel = profile.geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            var models = profile.geminiModelChain.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if !initialModel.isEmpty {
+                if let index = models.firstIndex(of: initialModel) {
+                    models.remove(at: index)
+                }
+                models.insert(initialModel, at: 0)
+            }
+            env["MODEL_CHAIN"] = models.joined(separator: ",")
+            env["GEMINI_INITIAL_PROMPT"] = profile.geminiInitialPrompt
             if env["RUNNER_LOG_FILE"] == nil || env["RUNNER_LOG_FILE"]?.isEmpty == true {
                 env["RUNNER_LOG_FILE"] = "/tmp/clilauncher.log"
             }
             switch profile.geminiFlavor {
             case .stable:
                 env["GEMINI_HOME"] = profile.expandedGeminiISOHome
+
             case .preview:
                 env["GEMINI_PREVIEW_ISO_HOME"] = profile.expandedGeminiISOHome
+
             case .nightly:
                 env["GEMINI_NIGHTLY_ISO_HOME"] = profile.expandedGeminiISOHome
             }
+
         case .copilot:
             let home = profile.expandedCopilotHome.trimmingCharacters(in: .whitespacesAndNewlines)
             if !home.isEmpty {
                 env["COPILOT_HOME"] = home
             }
+
         case .codex, .claudeBypass, .kiroCLI, .ollamaLaunch, .aider:
             break
         }
@@ -149,28 +161,34 @@ struct CommandBuilder {
 
     func selectedEnvironmentPreset(profile: LaunchProfile, settings: AppSettings) -> EnvironmentPreset? {
         guard let presetID = profile.environmentPresetID else { return nil }
-        return settings.environmentPresets.first(where: { $0.id == presetID })
+        return settings.environmentPresets.first { $0.id == presetID }
     }
 
     func selectedBootstrapPreset(profile: LaunchProfile, settings: AppSettings) -> ShellBootstrapPreset? {
         guard let presetID = profile.bootstrapPresetID else { return nil }
-        return settings.shellBootstrapPresets.first(where: { $0.id == presetID })
+        return settings.shellBootstrapPresets.first { $0.id == presetID }
     }
 
     func buildExecutableAndArgs(profile: LaunchProfile, settings: AppSettings) throws -> (executable: String, arguments: [String]) {
         switch profile.agentKind {
         case .gemini:
             return try buildGeminiExecutableAndArgs(profile: profile, settings: settings)
+
         case .copilot:
             return try buildCopilotExecutableAndArgs(profile: profile)
+
         case .codex:
             return try buildCodexExecutableAndArgs(profile: profile)
+
         case .claudeBypass:
             return try buildClaudeExecutableAndArgs(profile: profile)
+
         case .kiroCLI:
             return try buildKiroExecutableAndArgs(profile: profile)
+
         case .ollamaLaunch:
             return try buildOllamaExecutableAndArgs(profile: profile)
+
         case .aider:
             return try buildAiderExecutableAndArgs(profile: profile)
         }
@@ -193,6 +211,7 @@ struct CommandBuilder {
                 workingDirectory: profile.expandedWorkingDirectory
             )
             return (node, [runnerResolution.resolved ?? ""])
+
         case .directWrapper:
             return try buildGeminiDirectWrapperExecutableAndArgs(profile: profile)
         }
@@ -233,10 +252,13 @@ struct CommandBuilder {
         switch profile.copilotMode {
         case .interactive:
             break
+
         case .plan:
             args += ["--mode", "plan"]
+
         case .autopilot:
             args.append("--autopilot")
+
         case .autopilotYolo:
             args += ["--autopilot", "--yolo"]
         }
@@ -245,7 +267,7 @@ struct CommandBuilder {
         if !model.isEmpty {
             args += ["--model", model]
         }
-        if profile.copilotMode.isAutonomous && profile.copilotMaxAutopilotContinues > 0 {
+        if profile.copilotMode.isAutonomous, profile.copilotMaxAutopilotContinues > 0 {
             args += ["--max-autopilot-continues", String(profile.copilotMaxAutopilotContinues)]
         }
         let prompt = profile.copilotInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -297,8 +319,10 @@ struct CommandBuilder {
         switch profile.kiroMode {
         case .interactive:
             break
+
         case .chat:
             args.append("chat")
+
         case .chatResume:
             args += ["chat", "--resume"]
         }
@@ -333,8 +357,10 @@ struct CommandBuilder {
         switch profile.aiderMode {
         case .code:
             break
+
         case .architect:
             args.append("--architect")
+
         case .ask:
             args.append("--ask")
         }
@@ -363,7 +389,7 @@ struct CommandBuilder {
     }
 
     func descriptionForProfile(_ profile: LaunchProfile) -> String {
-        return profile.agentKind.providerDefinition.description(profile)
+        profile.agentKind.providerDefinition.description(profile)
     }
 
     func resolvedNodeExecutable(profile: LaunchProfile, settings: AppSettings) -> String {
@@ -425,7 +451,7 @@ struct CommandBuilder {
                 resolved: nil,
                 source: sourceSummary,
                 detail: "Checked candidate wrappers: \(candidates.joined(separator: ", ")). \(failureDetails)",
-                searchedLocations: Array(failedResolutions.flatMap { $0.searchedLocations }.prefix(40))
+                searchedLocations: Array(failedResolutions.flatMap(\.searchedLocations).prefix(40))
             )
         }
 
@@ -542,7 +568,7 @@ struct CommandBuilder {
     }
 
     private func splitCLIArguments(_ raw: String) -> [String] {
-        raw.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        raw.split { $0.isWhitespace }.map(String.init)
     }
 }
 
@@ -597,7 +623,7 @@ struct LaunchPlanner {
         }
 
         let sharedBookmark = workbench.sharedBookmarkID.flatMap { bookmarkLookup[$0] }
-        if workbench.sharedBookmarkID != nil && sharedBookmark == nil {
+        if workbench.sharedBookmarkID != nil, sharedBookmark == nil {
             throw LauncherError.validation("Workbench shared workspace no longer exists.")
         }
 
@@ -696,13 +722,13 @@ struct ToolDiscoveryService {
         value
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: { !$0.isEmpty })
+            .first { !$0.isEmpty }
     }
 
     private func appendProviderHealthChecks(
         profile: LaunchProfile,
         executable: String,
-        statusAppendBlock: @escaping (ToolStatus) -> Void,
+        statusAppendBlock: (ToolStatus) -> Void,
         warnings: inout [String]
     ) {
         let definition = profile.agentKind.providerDefinition
@@ -832,7 +858,7 @@ struct ToolDiscoveryService {
         let hasConfig = possibleConfigPaths.contains { hasPath($0) }
         let hasEnv = possibleEnvKeys.contains { ProcessInfo.processInfo.environment[$0] != nil && !ProcessInfo.processInfo.environment[$0]!.isEmpty }
 
-        if !hasConfig && !hasEnv {
+        if !hasConfig, !hasEnv {
             warnings.append("\(toolName) appears to have no local auth/session artifacts detected for \(executable). Authentication may still be required before first use.")
         }
     }
@@ -918,7 +944,7 @@ struct ToolDiscoveryService {
         }
 
         let start = Date()
-        while process.isRunning && Date().timeIntervalSince(start) < timeoutSeconds {
+        while process.isRunning, Date().timeIntervalSince(start) < timeoutSeconds {
             Thread.sleep(forTimeInterval: 0.05)
         }
 
@@ -1260,6 +1286,7 @@ struct ToolDiscoveryService {
                         )
                     }
             }
+
         case .copilot, .codex, .claudeBypass, .kiroCLI, .ollamaLaunch:
             let workingDirectory = profile.expandedWorkingDirectory
             let resolved = appendProviderExecutableCheck(
@@ -1268,7 +1295,7 @@ struct ToolDiscoveryService {
                 statusAppendBlock: { statuses.append($0) },
                 warnings: &warnings
             )
-            if profile.agentKind == .ollamaLaunch, let resolved = resolved {
+            if profile.agentKind == .ollamaLaunch, let resolved {
                 appendOllamaModelCheck(profile: profile, executable: resolved, statuses: &statuses, warnings: &warnings)
             }
 
@@ -1286,7 +1313,6 @@ struct ToolDiscoveryService {
     }
 }
 
-
 struct WorkspaceCompanionLauncher {
     private let fileManager = FileManager.default
 
@@ -1294,6 +1320,7 @@ struct WorkspaceCompanionLauncher {
         switch app {
         case .finder:
             return true
+
         case .visualStudioCode:
             return NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") != nil
         }
@@ -1327,6 +1354,7 @@ struct WorkspaceCompanionLauncher {
         case .finder:
             NSWorkspace.shared.activateFileViewerSelecting([url])
             return true
+
         case .visualStudioCode:
             guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") else {
                 return false
@@ -1351,12 +1379,12 @@ struct PreflightService {
         check.statuses = discoveryResult.statuses
         check.warnings.append(contentsOf: discoveryResult.warnings)
 
-        if !check.statuses.filter({ $0.isError }).isEmpty {
-            check.errors.append(contentsOf: check.statuses.filter { $0.isError }.map { $0.name + ": " + $0.detail })
+        if !check.statuses.filter(\.isError).isEmpty {
+            check.errors.append(contentsOf: check.statuses.filter(\.isError).map { $0.name + ": " + $0.detail })
         }
 
         check.warnings.append(contentsOf: profile.agentKind.defaultCautionMessages(for: profile))
-        if profile.autoLaunchCompanions && profile.companionProfileIDs.isEmpty {
+        if profile.autoLaunchCompanions, profile.companionProfileIDs.isEmpty {
             check.warnings.append("Companion launch is enabled but no companion profiles are selected.")
         }
         if profile.autoLaunchCompanions {
@@ -1376,19 +1404,19 @@ struct PreflightService {
                 check.warnings.append("Selected shell bootstrap preset no longer exists.")
             }
         }
-        if profile.openWorkspaceInVSCodeOnLaunch && !companionLauncher.isAvailable(.visualStudioCode) {
+        if profile.openWorkspaceInVSCodeOnLaunch, !companionLauncher.isAvailable(.visualStudioCode) {
             check.warnings.append("Visual Studio Code will not open after launch because the app is not installed or not visible to Launch Services.")
         }
         if profile.tabLaunchDelayMs < 100 {
             check.warnings.append("Tab launch delay below 100 ms can cause iTerm2 tab creation race conditions.")
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output. Passwords or secrets typed in the terminal can be recorded.")
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites, settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.mongoConnection.isLocal {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites, settings.mongoMonitoring.mongoConnection.isLocal {
             if commandBuilder.resolvedExecutable(settings.mongoMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
@@ -1450,16 +1478,16 @@ struct PreflightService {
             check.statuses.append(contentsOf: statuses)
         }
 
-        if !check.statuses.filter({ $0.isError }).isEmpty {
-            check.errors.append(contentsOf: check.statuses.filter { $0.isError }.map { $0.name + ": " + $0.detail })
+        if !check.statuses.filter(\.isError).isEmpty {
+            check.errors.append(contentsOf: check.statuses.filter(\.isError).map { $0.name + ": " + $0.detail })
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
             check.warnings.append("Terminal transcript monitoring is set to capture keyboard input and terminal output for launched workbench tabs.")
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites, settings.mongoMonitoring.trimmedConnectionURL.isEmpty {
             check.errors.append("MongoDB monitoring is enabled but the connection URL is empty.")
         }
-        if settings.mongoMonitoring.enabled && settings.mongoMonitoring.enableMongoWrites && settings.mongoMonitoring.mongoConnection.isLocal {
+        if settings.mongoMonitoring.enabled, settings.mongoMonitoring.enableMongoWrites, settings.mongoMonitoring.mongoConnection.isLocal {
             if commandBuilder.resolvedExecutable(settings.mongoMonitoring.mongodExecutable) == nil {
                 check.errors.append("Local MongoDB URL is configured, but mongod executable was not found. Set it in Monitoring settings.")
             }
@@ -1476,7 +1504,6 @@ struct PreflightService {
 
         return check
     }
-
 }
 
 struct AppleScriptExecutionResult {
@@ -1550,7 +1577,7 @@ struct ITerm2RuntimeService {
             homeApplications.appendingPathComponent("iTerm.app", isDirectory: true)
         ]
 
-        return candidates.first(where: { fileManager.fileExists(atPath: $0.path) })
+        return candidates.first { fileManager.fileExists(atPath: $0.path) }
     }
 
     func isInstalled() -> Bool {
@@ -1744,7 +1771,7 @@ struct ITerm2ProfileService {
             .replacingOccurrences(of: "\"", with: "")
 
         let pieces = cleaned
-            .split(whereSeparator: { $0.isNewline || $0 == "," })
+            .split { $0.isNewline || $0 == "," }
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
@@ -1775,7 +1802,7 @@ struct ITerm2Launcher {
 
     @MainActor
     func launch(plan: PlannedLaunch, logger: LaunchLogger? = nil, observability: ObservabilitySettings = ObservabilitySettings()) throws {
-        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1000.0)
+        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1_000.0)
         LaunchLoggerBridge.log(logger, .info, "Launching \(plan.items.count) iTerm2 session(s).", category: .iterm, details: "tabDelayMs=\(plan.tabLaunchDelayMs)")
         for (index, item) in plan.items.enumerated() {
             let mode: ITermOpenMode = index == 0 ? item.openMode : .newTab
@@ -1828,7 +1855,7 @@ struct ITerm2Launcher {
                 result.output.isEmpty ? nil : "stdout=\(result.output)",
                 result.errorOutput.isEmpty ? nil : "stderr=\(result.errorOutput)",
                 "exitCode=\(result.terminationStatus)"
-            ].compactMap { $0 }.joined(separator: " • ")
+            ].compactMap(\.self).joined(separator: " • ")
             LaunchLoggerBridge.debug(logger, "iTerm2 AppleScript execution finished.", category: .iterm, details: executionDetails)
         } catch {
             LaunchLoggerBridge.log(
@@ -1843,7 +1870,7 @@ struct ITerm2Launcher {
     }
 
     func buildAppleScript(plan: PlannedLaunch) -> String {
-        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1000.0)
+        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1_000.0)
         guard let first = plan.items.first else {
             return """
             tell \(ITerm2RuntimeService.appleScriptApplicationReference)
@@ -1894,6 +1921,7 @@ struct ITerm2Launcher {
         switch openMode {
         case .newWindow:
             return createWindow
+
         case .newTab:
             return """
             if (count of windows) = 0 then
@@ -1939,8 +1967,7 @@ enum LaunchScriptMaterializer {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
         let file = dir.appendingPathComponent("clilauncher-launch-\(UUID().uuidString).sh")
         let body = """
-        #!/bin/zsh -l
-        [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
+        #!/bin/zsh
         \(command)
         """
         do {
@@ -1957,8 +1984,8 @@ struct TerminalAppLauncher {
     private let executor = AppleScriptExecutionService()
 
     @MainActor
-    func launch(plan: PlannedLaunch, logger: LaunchLogger? = nil, observability: ObservabilitySettings = ObservabilitySettings()) throws {
-        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1000.0)
+    func launch(plan: PlannedLaunch, logger: LaunchLogger? = nil, observability _: ObservabilitySettings = ObservabilitySettings()) throws {
+        let delaySeconds = max(0.05, Double(plan.tabLaunchDelayMs) / 1_000.0)
         LaunchLoggerBridge.log(logger, .info, "Launching \(plan.items.count) Terminal.app session(s).", category: .iterm, details: "tabDelayMs=\(plan.tabLaunchDelayMs)")
         for (index, item) in plan.items.enumerated() {
             let scriptPath = LaunchScriptMaterializer.materialize(command: item.command)
@@ -2002,6 +2029,7 @@ struct TerminalLauncherDispatcher {
             switch group.app {
             case .iterm2:
                 try iterm.launch(plan: subPlan, logger: logger, observability: observability)
+
             case .terminal:
                 try terminal.launch(plan: subPlan, logger: logger, observability: observability)
             }
@@ -2063,7 +2091,6 @@ struct LauncherExportService {
 
 @MainActor
 enum FilePanelService {
-
     static func chooseDirectory() -> String? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
