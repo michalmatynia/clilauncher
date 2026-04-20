@@ -133,11 +133,6 @@ extension AgentKind {
                     }
                     return aliases
                 },
-                supportedModes: [GeminiLaunchMode.automationRunner.rawValue, GeminiLaunchMode.directWrapper.rawValue],
-                description: { profile in
-                    "\(profile.geminiFlavor.displayName) • \(profile.geminiLaunchMode.displayName)"
-                },
-                defaultModel: { _ in "" },
                 defaultProfileMutation: { profile in
                     profile.applyGeminiFlavorDefaults()
                 },
@@ -158,6 +153,11 @@ extension AgentKind {
                         profile.geminiModelChain = profile.geminiFlavor.defaultModelChain
                     }
                 },
+                supportedModes: [GeminiLaunchMode.automationRunner.rawValue, GeminiLaunchMode.directWrapper.rawValue],
+                description: { profile in
+                    "\(profile.geminiFlavor.displayName) • \(profile.geminiLaunchMode.displayName)"
+                },
+                defaultModel: { _ in "" },
                 modelFlags: [],
                 configPaths: ["~/.config/gemini", "~/.gemini", "~/.cache/gemini", "~/Library/Application Support/Gemini"],
                 envKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"],
@@ -171,11 +171,6 @@ extension AgentKind {
                 defaultTemplateTitle: "Copilot",
                 systemImage: "person.crop.circle.badge.checkmark",
                 executableAliases: { _ in ["copilot"] },
-                supportedModes: [CopilotMode.interactive.rawValue, CopilotMode.plan.rawValue, CopilotMode.autopilot.rawValue, CopilotMode.autopilotYolo.rawValue],
-                description: { profile in
-                    "Copilot • \(profile.copilotMode.displayName)"
-                },
-                defaultModel: { $0.copilotModel },
                 defaultProfileMutation: { profile in
                     profile.name = "Copilot Interactive"
                     profile.copilotMode = .interactive
@@ -199,6 +194,11 @@ extension AgentKind {
                         profile.copilotMaxAutopilotContinues = 10
                     }
                 },
+                supportedModes: [CopilotMode.interactive.rawValue, CopilotMode.plan.rawValue, CopilotMode.autopilot.rawValue, CopilotMode.autopilotYolo.rawValue],
+                description: { profile in
+                    "Copilot • \(profile.copilotMode.displayName)"
+                },
+                defaultModel: { $0.copilotModel },
                 modelFlags: ["--model"],
                 configPaths: ["~/.config/github-copilot", "~/.local/share/github-copilot", "~/.copilot"],
                 envKeys: ["GITHUB_TOKEN", "GH_TOKEN", "COPILOT_TOKEN"],
@@ -212,11 +212,6 @@ extension AgentKind {
                 defaultTemplateTitle: "Codex",
                 systemImage: "cpu",
                 executableAliases: { _ in ["codex"] },
-                supportedModes: [CodexMode.suggest.rawValue, CodexMode.autoEdit.rawValue, CodexMode.fullAuto.rawValue],
-                description: { profile in
-                    "Codex • \(profile.codexMode.displayName)"
-                },
-                defaultModel: { $0.codexModel },
                 defaultProfileMutation: { profile in
                     profile.name = "Codex Full Auto"
                     profile.codexMode = .fullAuto
@@ -231,6 +226,11 @@ extension AgentKind {
                         profile.codexExecutable = "codex"
                     }
                 },
+                supportedModes: [CodexMode.suggest.rawValue, CodexMode.autoEdit.rawValue, CodexMode.fullAuto.rawValue],
+                description: { profile in
+                    "Codex • \(profile.codexMode.displayName)"
+                },
+                defaultModel: { $0.codexModel },
                 modelFlags: ["-m", "--model"],
                 configPaths: ["~/.config/codex", "~/.codex"],
                 envKeys: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION"],
@@ -244,11 +244,6 @@ extension AgentKind {
                 defaultTemplateTitle: "Claude Bypass",
                 systemImage: "hand.raised.fill",
                 executableAliases: { _ in ["claude"] },
-                supportedModes: [KiroMode.interactive.rawValue],
-                description: { _ in
-                    "Claude Bypass"
-                },
-                defaultModel: { $0.claudeModel },
                 defaultProfileMutation: { profile in
                     profile.name = "Claude Bypass"
                     profile.claudeExecutable = "claude"
@@ -262,6 +257,11 @@ extension AgentKind {
                         profile.claudeExecutable = "claude"
                     }
                 },
+                supportedModes: [KiroMode.interactive.rawValue],
+                description: { _ in
+                    "Claude Bypass"
+                },
+                defaultModel: { $0.claudeModel },
                 modelFlags: ["--model"],
                 configPaths: ["~/.config/claude", "~/.claude"],
                 envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", "CLAUDE_API_KEY"],
@@ -275,11 +275,6 @@ extension AgentKind {
                 defaultTemplateTitle: "Kiro CLI",
                 systemImage: "chevron.left.forwardslash.chevron.right",
                 executableAliases: { _ in ["kiro", "kiro-cli"] },
-                supportedModes: [KiroMode.interactive.rawValue, KiroMode.chatResume.rawValue],
-                description: { profile in
-                    "Kiro CLI • \(profile.kiroMode.displayName)"
-                },
-                defaultModel: { _ in "" },
                 defaultProfileMutation: { profile in
                     profile.name = "Kiro CLI"
                     profile.kiroExecutable = "kiro-cli"
@@ -293,6 +288,11 @@ extension AgentKind {
                         profile.kiroExecutable = "kiro-cli"
                     }
                 },
+                supportedModes: [KiroMode.interactive.rawValue, KiroMode.chatResume.rawValue],
+                description: { profile in
+                    "Kiro CLI • \(profile.kiroMode.displayName)"
+                },
+                defaultModel: { _ in "" },
                 modelFlags: [],
                 configPaths: ["~/.config/kiro", "~/.kiro"],
                 envKeys: ["KIRO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
@@ -306,11 +306,6 @@ extension AgentKind {
                 defaultTemplateTitle: "Ollama Claude GLM-5.1 Cloud",
                 systemImage: "cloud.fill",
                 executableAliases: { _ in ["ollama"] },
-                supportedModes: [OllamaIntegration.claude.rawValue, OllamaIntegration.codex.rawValue],
-                description: { profile in
-                    "Ollama \(profile.ollamaIntegration.displayName) • \(profile.ollamaModel)"
-                },
-                defaultModel: { $0.ollamaModel },
                 defaultProfileMutation: { profile in
                     profile.ollamaIntegration = .claude
                     profile.ollamaModel = "glm-5.1:cloud"
@@ -328,6 +323,11 @@ extension AgentKind {
                         profile.ollamaModel = "glm-5.1:cloud"
                     }
                 },
+                supportedModes: [OllamaIntegration.claude.rawValue, OllamaIntegration.codex.rawValue],
+                description: { profile in
+                    "Ollama \(profile.ollamaIntegration.displayName) • \(profile.ollamaModel)"
+                },
+                defaultModel: { $0.ollamaModel },
                 modelFlags: ["--model", "-m"],
                 configPaths: ["~/.ollama", "~/.config/ollama"],
                 envKeys: ["OLLAMA_HOST", "OLLAMA_ORIGINS"],
@@ -402,7 +402,7 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
     }
 
     var wrapperAliasNames: [String] {
-        var aliases: [String] = [wrapperName, "gemini", "gemini-cli"]
+        let aliases: [String] = [wrapperName, "gemini", "gemini-cli"]
         var unique: [String] = []
         for alias in aliases {
             guard !alias.isEmpty, !unique.contains(alias) else { continue }
@@ -429,17 +429,17 @@ enum GeminiFlavor: String, CaseIterable, Codable, Identifiable {
 
     var defaultInitialModel: String {
         switch self {
-        case .stable: return "gemini-2.5-pro"
-        case .preview, .nightly: return "gemini-3-pro-preview"
+        case .stable: return "gemini-2.5-flash"
+        case .preview, .nightly: return "gemini-2.5-flash"
         }
     }
 
     var defaultModelChain: String {
         switch self {
         case .stable:
-            return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
+            return ["gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
         case .preview, .nightly:
-            return ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
+            return ["gemini-2.5-flash", "gemini-2.5-flash-lite"].joined(separator: ",")
         }
     }
 }
@@ -1090,7 +1090,7 @@ struct ObservabilitySettings: Codable, Equatable {
 struct AppSettings: Codable, Equatable {
     var defaultWorkingDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
     var defaultNodeExecutable: String = "node"
-    var defaultGeminiRunnerPath: String = ""
+    var defaultGeminiRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var defaultITermProfile: String = ""
     var defaultOpenMode: ITermOpenMode = .newWindow
     var defaultHotkeyPrefix: String = "ctrl-\\"
@@ -1282,7 +1282,7 @@ enum LaunchTemplateCatalog {
     }
 }
 
-struct WorkbenchTemplate: Identifiable {
+struct WorkbenchTemplate: Identifiable, Sendable {
     let id: String
     let title: String
     let notes: String
@@ -1290,7 +1290,7 @@ struct WorkbenchTemplate: Identifiable {
     let role: WorkbenchRole
     let startupDelayMs: Int
     let postLaunchActionHints: [String]
-    let buildProfileIDs: ([LaunchProfile]) -> [UUID]
+    let buildProfileIDs: @Sendable ([LaunchProfile]) -> [UUID]
 
     func buildWorkbench(using profiles: [LaunchProfile]) -> LaunchWorkbench {
         var workbench = LaunchWorkbench()
@@ -1321,7 +1321,7 @@ enum WorkbenchTemplateCatalog {
         startupDelayMs: Int,
         tags: [String],
         postLaunchActionHints: [String] = [],
-        buildProfileIDs: @escaping ([LaunchProfile]) -> [UUID]
+        buildProfileIDs: @escaping @Sendable ([LaunchProfile]) -> [UUID]
     ) -> WorkbenchTemplate {
         WorkbenchTemplate(
             id: id,
@@ -1425,7 +1425,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiRawOutput: Bool = false
     var geminiManualOverrideMs: Int = 20_000
     var geminiHotkeyPrefix: String = "ctrl-\\"
-    var geminiAutomationRunnerPath: String = ""
+    var geminiAutomationRunnerPath: String = BundledGeminiAutomationRunner.defaultPath
     var nodeExecutable: String = "node"
 
     // Copilot
@@ -1548,10 +1548,14 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     }
 
     mutating func applyGeminiFlavorDefaults() {
+        geminiLaunchMode = .automationRunner
         geminiWrapperCommand = geminiFlavor.wrapperName
         geminiISOHome = geminiFlavor.defaultISOHome
         geminiInitialModel = geminiFlavor.defaultInitialModel
         geminiModelChain = geminiFlavor.defaultModelChain
+        if geminiAutomationRunnerPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            geminiAutomationRunnerPath = BundledGeminiAutomationRunner.defaultPath
+        }
         if agentKind == .gemini {
             name = geminiFlavor.displayName
         }
@@ -1566,7 +1570,10 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         openWorkspaceInVSCodeOnLaunch = settings.defaultOpenWorkspaceInVSCodeOnLaunch
         tabLaunchDelayMs = settings.defaultTabLaunchDelayMs
         nodeExecutable = settings.defaultNodeExecutable
-        geminiAutomationRunnerPath = settings.defaultGeminiRunnerPath
+        let configuredRunnerPath = settings.defaultGeminiRunnerPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        geminiAutomationRunnerPath = configuredRunnerPath.isEmpty
+            ? BundledGeminiAutomationRunner.defaultPath
+            : settings.defaultGeminiRunnerPath
         geminiHotkeyPrefix = settings.defaultHotkeyPrefix
         geminiKeepTryMax = settings.defaultKeepTryMax
         geminiManualOverrideMs = settings.defaultManualOverrideMs
@@ -1679,6 +1686,16 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         geminiISOHome = try container.decodeDefault(String.self, forKey: .geminiISOHome, default: defaults.geminiISOHome)
         geminiInitialModel = try container.decodeDefault(String.self, forKey: .geminiInitialModel, default: defaults.geminiInitialModel)
         geminiModelChain = try container.decodeDefault(String.self, forKey: .geminiModelChain, default: defaults.geminiModelChain)
+        let legacyProModelChains: Set<String> = [
+            "gemini-3-pro-preview,gemini-3-flash-preview,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
+            "gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite"
+        ]
+        if legacyProModelChains.contains(geminiModelChain.replacingOccurrences(of: " ", with: "")) {
+            geminiModelChain = geminiFlavor.defaultModelChain
+        }
+        if ["gemini-3-pro-preview", "gemini-2.5-pro"].contains(geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            geminiInitialModel = geminiFlavor.defaultInitialModel
+        }
         geminiResumeLatest = try container.decodeDefault(Bool.self, forKey: .geminiResumeLatest, default: defaults.geminiResumeLatest)
         geminiKeepTryMax = try container.decodeDefault(Int.self, forKey: .geminiKeepTryMax, default: defaults.geminiKeepTryMax)
         geminiAutoContinueMode = try container.decodeDefault(AutoContinueMode.self, forKey: .geminiAutoContinueMode, default: defaults.geminiAutoContinueMode)

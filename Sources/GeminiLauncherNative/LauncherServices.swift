@@ -14,6 +14,40 @@ enum LauncherError: LocalizedError {
     }
 }
 
+private final class LockedLaunchErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: Error?
+
+    func set(_ error: Error?) {
+        lock.lock()
+        storedError = error
+        lock.unlock()
+    }
+
+    func get() -> Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedError
+    }
+}
+
+private final class LockedBooleanBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set(_ newValue: Bool) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+
+    func get() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 struct CommandBuilder {
     private let executableResolver = ExecutableResolver()
 
@@ -44,7 +78,8 @@ struct CommandBuilder {
             .joined(separator: " ") + " "
 
         let joinedArgs = executableAndArgs.arguments.map(shellQuotePreservingFlags).joined(separator: " ")
-        let commandCore = "exec \(prefix)\(shellQuote(executableAndArgs.executable))" + (joinedArgs.isEmpty ? "" : " \(joinedArgs)")
+        let probe = "printf '%s %s\\n' \"$(date -u +%FT%TZ)\" 'shell-reached-exec' >> /tmp/clilauncher_probe.txt && "
+        let commandCore = "\(probe)exec \(prefix)\(shellQuote(executableAndArgs.executable))" + (joinedArgs.isEmpty ? "" : " \(joinedArgs)")
 
         let bootstrapCommands = [
             settings.defaultShellBootstrapCommand.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -67,7 +102,7 @@ struct CommandBuilder {
         case .gemini:
             let resolvedWrapper = resolveGeminiWrapper(profile: profile, workingDirectory: profile.expandedWorkingDirectory).resolved
             env["CLI_FLAVOR"] = profile.geminiFlavor.cliFlavorValue
-            env["GEMINI_WRAPPER"] = resolvedWrapper ?? resolvedGeminiWrapper(profile)
+            env["GEMINI_WRAPPER"] = resolvedWrapper ?? resolvedGeminiWrapper(profile: profile)
             env["GEMINI_ISO_HOME"] = profile.expandedGeminiISOHome
             env["RESUME_LATEST"] = profile.geminiResumeLatest ? "1" : "0"
             env["KEEP_TRY_MAX"] = String(profile.geminiKeepTryMax)
@@ -80,6 +115,9 @@ struct CommandBuilder {
             env["MANUAL_OVERRIDE_MS"] = String(profile.geminiManualOverrideMs)
             env["HOTKEY_PREFIX"] = profile.geminiHotkeyPrefix
             env["MODEL_CHAIN"] = profile.geminiModelChain
+            if env["RUNNER_LOG_FILE"] == nil || env["RUNNER_LOG_FILE"]?.isEmpty == true {
+                env["RUNNER_LOG_FILE"] = "/tmp/clilauncher.log"
+            }
             switch profile.geminiFlavor {
             case .stable:
                 env["GEMINI_HOME"] = profile.expandedGeminiISOHome
@@ -157,7 +195,7 @@ struct CommandBuilder {
         var args: [String] = []
         let initialModel = profile.geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !initialModel.isEmpty {
-            args.append(initialModel)
+            args += ["--model", initialModel]
         }
         if profile.geminiResumeLatest {
             args.append("--resume")
@@ -350,12 +388,19 @@ struct CommandBuilder {
     }
 
     func resolvedRunnerPath(profile: LaunchProfile, settings: AppSettings) -> String {
-        let raw = profile.expandedGeminiRunnerPath
-        if raw.isEmpty {
-            let defaultRunner = NSString(string: settings.defaultGeminiRunnerPath).expandingTildeInPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = profile.expandedGeminiRunnerPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty {
+            return raw
+        }
+
+        let defaultRunner = NSString(string: settings.defaultGeminiRunnerPath)
+            .expandingTildeInPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !defaultRunner.isEmpty {
             return defaultRunner
         }
-        return raw
+
+        return BundledGeminiAutomationRunner.defaultPath
     }
 
     func resolveAutomationRunner(profile: LaunchProfile, settings: AppSettings, workingDirectory: String) -> ExecutableResolution {
@@ -368,6 +413,19 @@ struct CommandBuilder {
                 detail: "Automation runner is not configured. Launcher will use direct wrapper mode."
             )
         }
+
+        let expandedRunner = NSString(string: rawRunner).expandingTildeInPath
+        let runnerPath = expandedRunner.hasPrefix("/") ? expandedRunner : (workingDirectory as NSString).appendingPathComponent(expandedRunner)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: runnerPath, isDirectory: &isDirectory), !isDirectory.boolValue {
+            return ExecutableResolution(
+                requested: rawRunner,
+                resolved: runnerPath,
+                source: "configured file path",
+                detail: "Automation runner script found at \(runnerPath)."
+            )
+        }
+
         return resolveExecutable(rawRunner, workingDirectory: workingDirectory)
     }
 
@@ -777,12 +835,20 @@ struct ToolDiscoveryService {
         }
     }
 
-    private func runCommandProbe(executable: String, arguments: [String], timeoutSeconds: Double = 1.4) -> CommandProbeResult? {
+    private func runCommandProbe(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String? = nil,
+        timeoutSeconds: Double = 1.4
+    ) -> CommandProbeResult? {
         guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let workingDirectory, !workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -861,6 +927,69 @@ struct ToolDiscoveryService {
         warnings.append("Could not confirm \(toolName) version from quick probe. \(toolName) may still be usable, but runtime diagnostics could not be read.")
     }
 
+    private func appendGeminiPtyModuleStatus(
+        nodeExecutable: String,
+        workingDirectory: String,
+        statuses: inout [ToolStatus],
+        warnings: inout [String]
+    ) {
+        let probeScript = """
+        const candidates = ['@lydell/node-pty', 'node-pty'];
+        for (const name of candidates) {
+          try {
+            const resolved = require.resolve(name, { paths: [process.cwd()] });
+            console.log(`${name}|${resolved}`);
+            process.exit(0);
+          } catch {}
+        }
+        process.exit(1);
+        """
+
+        guard let probe = runCommandProbe(
+            executable: nodeExecutable,
+            arguments: ["-e", probeScript],
+            workingDirectory: workingDirectory,
+            timeoutSeconds: 1.4
+        ) else {
+            warnings.append("Could not verify Gemini PTY backend availability from Node. Automation runner may still fall back to direct child-process mode.")
+            return
+        }
+
+        if probe.timedOut {
+            warnings.append("Gemini PTY backend check timed out. Automation runner may still fall back to direct child-process mode.")
+            return
+        }
+
+        if probe.exitCode == 0, let line = firstNonEmptyLine(from: probe.stdout) {
+            let components = line.split(separator: "|", maxSplits: 1).map(String.init)
+            let packageName = components.first ?? "node-pty"
+            let resolvedPath = components.count > 1 ? components[1] : line
+            statuses.append(
+                ToolStatus(
+                    name: "Gemini PTY backend",
+                    requested: "@lydell/node-pty or node-pty",
+                    resolved: packageName,
+                    detail: "Automation runner will use PTY mode via \(packageName) resolved from \(resolvedPath).",
+                    isError: false,
+                    resolutionSource: "runtime probe"
+                )
+            )
+            return
+        }
+
+        statuses.append(
+            ToolStatus(
+                name: "Gemini PTY backend",
+                requested: "@lydell/node-pty or node-pty",
+                resolved: nil,
+                detail: "No PTY package was found from the workspace. Automation runner will fall back to plain child-process mode, so hotkeys and prompt automation will be unavailable.\nInstall one of these in the launch workspace:\ncd \(workingDirectory)\nnpm install @lydell/node-pty\nor\ncd \(workingDirectory)\nnpm install node-pty",
+                isError: false,
+                resolutionSource: "runtime probe"
+            )
+        )
+        warnings.append("Gemini automation runner could not find `@lydell/node-pty` or `node-pty` from the workspace. Run `npm install @lydell/node-pty` (or `npm install node-pty`) in `\(workingDirectory)` to enable PTY automation and hotkeys.")
+    }
+
     private func appendOllamaModelCheck(
         profile: LaunchProfile,
         executable: String,
@@ -929,17 +1058,20 @@ struct ToolDiscoveryService {
         let workspaceOK = FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDirectory) && isDirectory.boolValue
         statuses.append(ToolStatus(name: "Workspace", requested: workspacePath, resolved: workspaceOK ? workspacePath : nil, detail: workspaceOK ? "Directory exists" : "Missing directory", isError: !workspaceOK))
 
-        let resolverSnapshot = executableResolverSnapshot()
+        let resolverSnapshot = builder.executableResolverSnapshot()
         let processPath = resolverSnapshot.processPath
         let pathHelperPath = resolverSnapshot.pathHelperPath
         let loginShellPath = resolverSnapshot.loginShellPath
         let pathHelperStatus = resolverSnapshot.pathHelperStatus
         let loginShellStatus = resolverSnapshot.loginShellStatus
-        let resolverDetail = "process PATH: \(processPath.isEmpty ? "not set" : processPath)\n" +
-            "path_helper PATH: \(pathHelperPath.isEmpty ? "not available" : pathHelperPath)\n" +
-            "path_helper status: \(pathHelperStatus)\n" +
-            "login shell PATH: \(loginShellPath.isEmpty ? "not available" : loginShellPath)\n" +
+        let resolverDetailLines = [
+            "process PATH: \(processPath.isEmpty ? "not set" : processPath)",
+            "path_helper PATH: \(pathHelperPath.isEmpty ? "not available" : pathHelperPath)",
+            "path_helper status: \(pathHelperStatus)",
+            "login shell PATH: \(loginShellPath.isEmpty ? "not available" : loginShellPath)",
             "login shell status: \(loginShellStatus)"
+        ]
+        let resolverDetail = resolverDetailLines.joined(separator: "\n")
         let resolverSources = resolverSnapshot.sourceSummary.isEmpty ? "No auxiliary resolver sources available." : resolverSnapshot.sourceSummary.joined(separator: ", ")
         statuses.append(
             ToolStatus(
@@ -1026,6 +1158,12 @@ struct ToolDiscoveryService {
                         toolName: "Node",
                         executable: nodeResolved,
                         commandVariants: [["--version"], ["-v"]],
+                        statuses: &statuses,
+                        warnings: &warnings
+                    )
+                    appendGeminiPtyModuleStatus(
+                        nodeExecutable: nodeResolved,
+                        workingDirectory: workingDirectory,
                         statuses: &statuses,
                         warnings: &warnings
                     )
@@ -1372,21 +1510,38 @@ struct ITerm2RuntimeService {
         configuration.activates = true
         configuration.addsToRecentItems = false
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var launchError: Error?
+        let launchErrorBox = LockedLaunchErrorBox()
+        let didReceiveCompletionBox = LockedBooleanBox()
 
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            launchError = error
-            semaphore.signal()
+            launchErrorBox.set(error)
+            didReceiveCompletionBox.set(true)
         }
 
-        _ = semaphore.wait(timeout: .now() + 5)
-        if let launchError {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if isRunning() {
+                return url
+            }
+            if let launchError = launchErrorBox.get() {
+                throw LauncherError.validation("Failed to launch iTerm2: \(launchError.localizedDescription)")
+            }
+            if didReceiveCompletionBox.get() {
+                break
+            }
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+
+        if !isRunning() {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.35))
+        }
+
+        if let launchError = launchErrorBox.get() {
             throw LauncherError.validation("Failed to launch iTerm2: \(launchError.localizedDescription)")
         }
 
         if !isRunning() {
-            Thread.sleep(forTimeInterval: 0.35)
+            throw LauncherError.validation("iTerm2 did not finish launching in time.")
         }
 
         return url
@@ -1658,45 +1813,50 @@ struct ITerm2Launcher {
     }
 
     private func openSnippet(command: String, openMode: ITermOpenMode, iTermProfile: String) -> String {
-        let escapedCommand = appleScriptQuote(command)
+        let scriptPath = materializeLaunchScript(command: command)
+        let escapedPath = appleScriptQuote(scriptPath)
         let escapedProfile = appleScriptQuote(iTermProfile)
         let useDefaultProfile = iTermProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         let createWindow = useDefaultProfile
-            ? "create window with default profile"
-            : "create window with profile \"\(escapedProfile)\""
+            ? "create window with default profile command \"\(escapedPath)\""
+            : "create window with profile \"\(escapedProfile)\" command \"\(escapedPath)\""
         let createTab = useDefaultProfile
-            ? "create tab with default profile"
-            : "create tab with profile \"\(escapedProfile)\""
+            ? "create tab with default profile command \"\(escapedPath)\""
+            : "create tab with profile \"\(escapedProfile)\" command \"\(escapedPath)\""
 
         switch openMode {
         case .newWindow:
-            return """
-            \(createWindow)
-            delay 0.05
-            tell current session of current window
-              write text "\(escapedCommand)"
-            end tell
-            """
+            return createWindow
         case .newTab:
             return """
             if (count of windows) = 0 then
               \(createWindow)
-              delay 0.05
-              tell current session of current window
-                write text "\(escapedCommand)"
-              end tell
             else
               tell current window
                 \(createTab)
-                delay 0.05
-                tell current session
-                  write text "\(escapedCommand)"
-                end tell
               end tell
             end if
             """
         }
+    }
+
+    private func materializeLaunchScript(command: String) -> String {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let file = dir.appendingPathComponent("clilauncher-launch-\(UUID().uuidString).sh")
+        let body = """
+        #!/bin/zsh -l
+        [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
+        \(command)
+        """
+        do {
+            try body.write(to: file, atomically: true, encoding: .utf8)
+            let fm = FileManager.default
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        } catch {
+            // Fall back to /tmp path even if write failed; iTerm will surface the error.
+        }
+        return file.path
     }
 
     private func commandPreview(_ command: String, limit: Int = 220) -> String {
@@ -1725,6 +1885,7 @@ struct ITerm2Launcher {
 struct LauncherExportService {
     private let launcher = ITerm2Launcher()
 
+    @MainActor
     func exportLauncherScript(plan: PlannedLaunch, suggestedName: String) throws -> URL {
         guard let chosenURL = FilePanelService.saveFile(suggestedName: suggestedName, allowedContentTypes: [.plainText]) else {
             throw LauncherError.validation("Export cancelled.")
@@ -1751,6 +1912,7 @@ struct LauncherExportService {
     }
 }
 
+@MainActor
 enum FilePanelService {
 
     static func chooseDirectory() -> String? {

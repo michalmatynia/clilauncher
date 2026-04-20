@@ -122,9 +122,12 @@ Legacy state folders are migrated automatically when found:
   - Enable database writes and confirm the monitoring connection URL points to a valid Mongo database.
   - Ensure `mongosh` is discoverable in app diagnostics and check the terminal monitoring status output for resolution details.
   - For localhost URLs, ensure `mongod` resolves and the local data directory is writable so the app can auto-bootstrap the daemon.
-- **Gemini wrapper errors**
-  - Confirm wrapper alias (`gemini-preview-iso` or configured alias) and `node` path.
-  - Ensure working directory is expected by wrapper mode.
+- **Gemini launch issues**
+  - Confirm the Gemini wrapper alias (`gemini-iso`, `gemini-preview-iso`, `gemini-nightly-iso`, or your configured alias) resolves in diagnostics.
+  - Confirm the `Automation runner`, `Node`, and `Gemini PTY backend` statuses in diagnostics for automation-runner mode.
+  - Leave the automation runner path blank if you want to use the app-bundled runner.
+  - Install `@lydell/node-pty` or `node-pty` in the launch workspace if you need PTY hotkeys and prompt automation.
+  - Ensure working directory is expected by the selected launch mode.
 - **Preflight warnings but launch still succeeds**
   - Warnings can be informational; use error-state blocks for required blockers.
 

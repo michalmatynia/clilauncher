@@ -32,21 +32,22 @@ struct ContentView: View {
     private let launcherExporter = LauncherExportService()
     private let companionLauncher = WorkspaceCompanionLauncher()
 
+    @ViewBuilder
     private func providerSection(for kind: AgentKind, profile: Binding<LaunchProfile>) -> some View {
         let sectionTitle = kind.displayName
         switch kind {
         case .gemini:
-            return geminiSection(profile: profile, title: sectionTitle)
+            geminiSection(profile: profile, title: sectionTitle)
         case .copilot:
-            return copilotSection(profile: profile, title: sectionTitle)
+            copilotSection(profile: profile, title: sectionTitle)
         case .codex:
-            return codexSection(profile: profile, title: sectionTitle)
+            codexSection(profile: profile, title: sectionTitle)
         case .claudeBypass:
-            return claudeSection(profile: profile, title: sectionTitle)
+            claudeSection(profile: profile, title: sectionTitle)
         case .kiroCLI:
-            return kiroSection(profile: profile, title: sectionTitle)
+            kiroSection(profile: profile, title: sectionTitle)
         case .ollamaLaunch:
-            return ollamaSection(profile: profile, title: sectionTitle)
+            ollamaSection(profile: profile, title: sectionTitle)
         }
     }
 
@@ -100,7 +101,7 @@ struct ContentView: View {
             liveRefreshTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshDiagnosticsRequested)) { _ in
-            scheduleLiveStateRefresh(immediate: true)
+            scheduleLiveStateRefresh(immediate: true, includeITermDiscovery: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .relaunchLastRequested)) { _ in
             relaunchLast()
@@ -108,6 +109,8 @@ struct ContentView: View {
         .onChange(of: selectedTab) { selection in
             if selection == .monitoring {
                 terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger)
+            } else if selection == .launch {
+                scheduleLiveStateRefresh(immediate: true, includeITermDiscovery: true)
             }
         }
         .onChange(of: store.selectedProfileID) { _ in scheduleLiveStateRefresh() }
@@ -196,10 +199,19 @@ struct ContentView: View {
     }
 
     private var selectedProfileBinding: Binding<LaunchProfile>? {
-        guard let index = store.selectedIndex else { return nil }
+        guard store.selectedIndex != nil else { return nil }
         return Binding(
-            get: { store.profiles[index] },
-            set: { store.profiles[index] = $0 }
+            get: {
+                guard let index = store.selectedIndex else {
+                    return ProfileStore.fallbackStarterProfile(settings: store.settings)
+                }
+                return store.profiles[index]
+            },
+            set: { newValue in
+                store.updateSelected { updated in
+                    updated = newValue
+                }
+            }
         )
     }
 
@@ -602,10 +614,10 @@ struct ContentView: View {
                             }
                         }
                         .onChange(of: profile.wrappedValue.agentKind) { newValue in
-                            var updated = profile.wrappedValue
-                            updated.agentKind = newValue
-                            updated.applyKindDefaults(settings: store.settings)
-                            profile.wrappedValue = updated
+                            store.updateSelected { updated in
+                                updated.agentKind = newValue
+                                updated.applyKindDefaults(settings: store.settings)
+                            }
                         }
 
                         HStack {
@@ -688,7 +700,9 @@ struct ContentView: View {
                     }
                 }
                 .onChange(of: profile.wrappedValue.geminiFlavor) { _ in
-                    profile.wrappedValue.applyGeminiFlavorDefaults()
+                    store.updateSelected { updated in
+                        updated.applyGeminiFlavorDefaults()
+                    }
                 }
 
                 Picker("Launch mode", selection: profile.geminiLaunchMode) {
@@ -696,13 +710,35 @@ struct ContentView: View {
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                Text(
+                    profile.wrappedValue.geminiLaunchMode == .automationRunner
+                    ? "Automation runner mode uses the bundled Gemini runner when this path is blank. Node is required. Install `@lydell/node-pty` or `node-pty` in the workspace for PTY hotkeys and prompt automation."
+                    : "Direct wrapper mode launches the configured Gemini wrapper directly and skips the bundled automation runner."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
                 TextField("Wrapper command", text: profile.geminiWrapperCommand)
                 TextField("ISO home", text: profile.geminiISOHome)
-                TextField("Initial model", text: profile.geminiInitialModel)
-                TextField("Model chain", text: profile.geminiModelChain, axis: .vertical)
-                    .lineLimit(2...4)
+                HStack {
+                    TextField("Initial model", text: profile.geminiInitialModel)
+                    Button("Reset") {
+                        profile.wrappedValue.geminiInitialModel = profile.wrappedValue.geminiFlavor.defaultInitialModel
+                    }
+                    .help("Reset initial model to flavor default")
+                }
+                HStack(alignment: .top) {
+                    TextField("Model chain", text: profile.geminiModelChain, axis: .vertical)
+                        .lineLimit(2...4)
+                    Button("Reset") {
+                        profile.wrappedValue.geminiModelChain = profile.wrappedValue.geminiFlavor.defaultModelChain
+                    }
+                    .help("Reset model chain to flavor default")
+                }
                 TextField("Automation runner path", text: profile.geminiAutomationRunnerPath)
+                Text("Leave the automation runner path blank to use the app-bundled runner for \(profile.wrappedValue.geminiFlavor.displayName).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("Node executable", text: profile.nodeExecutable)
                 TextField("Hotkey prefix", text: profile.geminiHotkeyPrefix)
 
@@ -1424,6 +1460,9 @@ struct ContentView: View {
                 TextField("Default working directory", text: $store.settings.defaultWorkingDirectory)
                 TextField("Default Node executable", text: $store.settings.defaultNodeExecutable)
                 TextField("Default automation runner path", text: $store.settings.defaultGeminiRunnerPath)
+                Text("Leave the default automation runner path blank to use the bundled Gemini automation runner shipped with the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("Default iTerm2 profile", text: $store.settings.defaultITermProfile)
                 TextField("Default hotkey prefix", text: $store.settings.defaultHotkeyPrefix)
                 TextField("Default shell bootstrap command", text: $store.settings.defaultShellBootstrapCommand, axis: .vertical)
@@ -1723,27 +1762,30 @@ struct ContentView: View {
         logger.log(.success, "Captured shared shell bootstrap preset from \(profile.name).")
     }
 
-    private func scheduleLiveStateRefresh(immediate: Bool = false) {
+    private func scheduleLiveStateRefresh(immediate: Bool = false, includeITermDiscovery: Bool = false) {
         liveRefreshTask?.cancel()
         liveRefreshTask = Task { @MainActor in
             if !immediate {
-                try? await Task.sleep(nanoseconds: 150_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
             guard !Task.isCancelled else { return }
-            refreshLiveState()
+            guard selectedTab == .launch else { return }
+            refreshLiveState(includeITermDiscovery: includeITermDiscovery)
         }
     }
 
-    private func refreshLiveState() {
+    private func refreshLiveState(includeITermDiscovery: Bool = true) {
         logger.apply(settings: store.settings.observability)
-        do {
-            let discovery = try iTermProfiles.fetchProfiles()
-            availableITermProfiles = discovery.names
-            iTermProfileSourceDescription = discovery.sourceDescription
-        } catch {
-            logger.log(.warning, "Failed to read iTerm2 profiles: \(error.localizedDescription)", category: .iterm)
-            availableITermProfiles = []
-            iTermProfileSourceDescription = "Profile discovery failed: \(error.localizedDescription)"
+        if includeITermDiscovery {
+            do {
+                let discovery = try iTermProfiles.fetchProfiles()
+                availableITermProfiles = discovery.names
+                iTermProfileSourceDescription = discovery.sourceDescription
+            } catch {
+                logger.log(.warning, "Failed to read iTerm2 profiles: \(error.localizedDescription)", category: .iterm)
+                availableITermProfiles = []
+                iTermProfileSourceDescription = "Profile discovery failed: \(error.localizedDescription)"
+            }
         }
         if let profile = store.selectedProfile {
             diagnostics = preflight.run(profile: profile, settings: store.settings, allProfiles: store.profiles)

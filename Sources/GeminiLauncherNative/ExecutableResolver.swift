@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct ExecutableResolution {
+struct ExecutableResolution: Sendable {
     var requested: String
     var resolved: String?
     var source: String?
@@ -13,7 +13,7 @@ struct ExecutableResolution {
     }
 }
 
-struct ExecutableResolverSnapshot {
+struct ExecutableResolverSnapshot: Sendable {
     var processPath: String
     var pathHelperPath: String
     var loginShellPath: String
@@ -22,12 +22,12 @@ struct ExecutableResolverSnapshot {
     var sourceSummary: [String]
 }
 
-private struct ExecutableSearchRoot: Hashable {
+private struct ExecutableSearchRoot: Hashable, Sendable {
     var path: String
     var source: String
 }
 
-private struct ExecutableSearchContext {
+private struct ExecutableSearchContext: Sendable {
     var roots: [ExecutableSearchRoot]
     var sourceSummary: [String]
     var processPath: String
@@ -245,14 +245,28 @@ struct ExecutableResolver {
         guard fileManager.isExecutableFile(atPath: "/usr/bin/which") else {
             return nil
         }
-        guard let output = Self.runProcess(executable: "/usr/bin/which", arguments: [command]) else {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        process.arguments = [command]
+
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
             return nil
         }
-        guard let firstLine = output
-            .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-            .first else {
-            return nil
-        }
+
+        guard process.terminationStatus == 0 else { return nil }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: outputData, as: UTF8.self)
+        let lines = output.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+        guard let firstLine = lines.first else { return nil }
+
         let trimmed = String(firstLine).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, fileManager.isExecutableFile(atPath: trimmed) else {
             return nil
@@ -264,8 +278,8 @@ struct ExecutableResolver {
 private enum ExecutableSearchContextCache {
     private static let queue = DispatchQueue(label: "ExecutableSearchContextCache")
     private static let ttl: TimeInterval = 5
-    private static var cachedContext: ExecutableSearchContext?
-    private static var cachedAt: Date?
+    nonisolated(unsafe) private static var cachedContext: ExecutableSearchContext?
+    nonisolated(unsafe) private static var cachedAt: Date?
 
     static func current() -> ExecutableSearchContext {
         queue.sync {
@@ -339,7 +353,8 @@ private enum ExecutableSearchContextCache {
 
         guard let output = runProcess(
             executable: "/usr/libexec/path_helper",
-            arguments: ["-s"]
+            arguments: ["-s"],
+            timeout: 0.5
         ) else {
             return ("", "path helper command failed")
         }
@@ -360,7 +375,7 @@ private enum ExecutableSearchContextCache {
 
         let marker = "__CLI_LAUNCHER_PATH__"
         let script = "printf '\\n\(marker)\\n'; printf '%s' \"$PATH\""
-        guard let output = runProcess(executable: shell, arguments: ["-l", "-c", script]),
+        guard let output = runProcess(executable: shell, arguments: ["-l", "-c", script], timeout: 1.0),
               let markerRange = output.range(of: marker) else {
             return ("", "login shell probe did not expose PATH")
         }
@@ -427,7 +442,7 @@ private enum ExecutableSearchContextCache {
             .filter { !$0.isEmpty }
     }
 
-    private static func runProcess(executable: String, arguments: [String]) -> String? {
+    private static func runProcess(executable: String, arguments: [String], timeout: TimeInterval = 1.0) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -438,7 +453,14 @@ private enum ExecutableSearchContextCache {
 
         do {
             try process.run()
-            process.waitUntilExit()
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning {
+                process.terminate()
+                return nil
+            }
             guard process.terminationStatus == 0 else { return nil }
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
             return String(decoding: data, as: UTF8.self)

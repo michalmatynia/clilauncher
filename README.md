@@ -19,7 +19,9 @@ This project was previously published as *GeminiLauncherNative* and has kept sou
 - iTerm2 installed (for default terminal execution path)
 - Swift 5.9+ toolchain (via Xcode or SwiftPM)
 - Local CLI tools for providers you intend to use:
-  - `gemini-preview-iso` (and `node` for legacy Gemini wrapper flow)
+  - Gemini wrapper aliases such as `gemini-iso`, `gemini-preview-iso`, or `gemini-nightly-iso`
+  - `node` for Gemini automation-runner mode
+  - `@lydell/node-pty` or `node-pty` in the target workspace if you want Gemini PTY automation, hotkeys, and prompt handling
   - `copilot`
   - `codex`
   - `claude`
@@ -42,8 +44,16 @@ This project was previously published as *GeminiLauncherNative* and has kept sou
 
    - Create or pick a profile.
    - Set working directory and runtime options.
-   - Run diagnostics preflight.
+   - Run diagnostics preflight and confirm Gemini profiles show the expected runner/wrapper/PT Y backend status.
    - Launch into iTerm2.
+
+## Gemini automation runner
+
+- Gemini profiles default to automation-runner mode.
+- When the automation runner path is blank, the app uses its bundled runner automatically.
+- The bundled runner launches the configured Gemini wrapper through `node`.
+- If `@lydell/node-pty` or `node-pty` is available from the launch workspace, the runner uses PTY mode with hotkeys and prompt automation.
+- If no PTY package is available, the runner falls back to plain child-process mode. Gemini can still launch, but PTY-only controls and prompt automation are unavailable.
 
 ## Build with SwiftPM
 

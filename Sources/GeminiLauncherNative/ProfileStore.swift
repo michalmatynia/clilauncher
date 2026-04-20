@@ -18,26 +18,40 @@ final class ProfileStore: ObservableObject {
     init() {
         let folder = AppPaths.containerDirectory
         try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        stateURL = AppPaths.stateFileURL
+        let resolvedStateURL = AppPaths.stateFileURL
 
-        if let state = Self.loadState(at: stateURL) ?? Self.loadLegacyState(from: AppPaths.applicationSupportDirectory) {
-            profiles = state.profiles
-            selectedProfileID = state.selectedProfileID ?? state.profiles.first?.id
-            settings = state.settings
-            history = state.history
-            bookmarks = state.bookmarks
-            workbenches = state.workbenches
+        let initialProfiles: [LaunchProfile]
+        let initialSelectedProfileID: UUID?
+        let initialSettings: AppSettings
+        let initialHistory: [LaunchHistoryItem]
+        let initialBookmarks: [WorkspaceBookmark]
+        let initialWorkbenches: [LaunchWorkbench]
+
+        if let state = Self.loadState(at: resolvedStateURL) ?? Self.loadLegacyState(from: AppPaths.applicationSupportDirectory) {
+            initialProfiles = state.profiles
+            initialSelectedProfileID = state.selectedProfileID ?? state.profiles.first?.id
+            initialSettings = state.settings
+            initialHistory = state.history
+            initialBookmarks = state.bookmarks
+            initialWorkbenches = state.workbenches
         } else {
-            let initialSettings = AppSettings()
-            let starters = Self.defaultProfiles(settings: initialSettings)
-            profiles = starters
-            selectedProfileID = profiles.first?.id
-            settings = initialSettings
-            history = []
-            bookmarks = []
-            workbenches = Self.defaultWorkbenches(profiles: profiles)
+            let defaultSettings = AppSettings()
+            let starters = Self.defaultProfiles(settings: defaultSettings)
+            initialProfiles = starters
+            initialSelectedProfileID = starters.first?.id
+            initialSettings = defaultSettings
+            initialHistory = []
+            initialBookmarks = []
+            initialWorkbenches = Self.defaultWorkbenches(profiles: starters)
         }
 
+        stateURL = resolvedStateURL
+        profiles = initialProfiles
+        selectedProfileID = initialSelectedProfileID
+        settings = initialSettings
+        history = initialHistory
+        bookmarks = initialBookmarks
+        workbenches = initialWorkbenches
         normalizeState()
     }
 
@@ -68,7 +82,7 @@ final class ProfileStore: ObservableObject {
     }
 
     static func fallbackStarterProfile(settings: AppSettings) -> LaunchProfile {
-        defaultProfiles(using: settings).first ?? LaunchProfile.starter(kind: .gemini, settings: settings)
+        defaultProfiles(settings: settings).first ?? LaunchProfile.starter(kind: .gemini, settings: settings)
     }
 
     var selectedIndex: Int? {
