@@ -19,9 +19,9 @@ This project was previously published as *GeminiLauncherNative* and has kept sou
 - iTerm2 installed (for default terminal execution path)
 - Swift 5.9+ toolchain (via Xcode or SwiftPM)
 - Local CLI tools for providers you intend to use:
-  - Gemini wrapper aliases such as `gemini-iso`, `gemini-preview-iso`, or `gemini-nightly-iso`
+  - Gemini wrapper aliases such as `gemini-stable` or `gemini-iso`, plus `gemini-preview-iso` or `gemini-nightly-iso`
   - `node` for Gemini automation-runner mode
-  - `@lydell/node-pty` or `node-pty` in the target workspace if you want Gemini PTY automation, hotkeys, and prompt handling
+  - `@lydell/node-pty` or `node-pty` in the target workspace if you want the primary Gemini PTY backend; the runner can also fall back to a bundled `python3` PTY bridge for autonomous prompt handling when Python is available
   - `copilot`
   - `codex`
   - `claude`
@@ -53,7 +53,8 @@ This project was previously published as *GeminiLauncherNative* and has kept sou
 - When the automation runner path is blank, the app uses its bundled runner automatically.
 - The bundled runner launches the configured Gemini wrapper through `node`.
 - If `@lydell/node-pty` or `node-pty` is available from the launch workspace, the runner uses PTY mode with hotkeys and prompt automation.
-- If no PTY package is available, the runner falls back to plain child-process mode. Gemini can still launch, but PTY-only controls and prompt automation are unavailable.
+- If no workspace PTY package is available, the runner falls back to a bundled `python3` PTY bridge so hotkeys and prompt automation still work when Python 3 is available.
+- If neither a workspace PTY package nor the Python fallback is available, the runner falls back to plain child-process mode. Gemini can still launch, but PTY-only controls and prompt automation are unavailable.
 
 ## Build with SwiftPM
 

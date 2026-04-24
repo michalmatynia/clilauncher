@@ -1,0 +1,6 @@
+Script started on Tue Apr 21 12:24:04 2026
+^Dzsh: locking failed for /Users/michalmatynia/.zsh_history: operation not permitted: reading anyway
+[1m[7m%[27m[1m[0m                                                                                ]697;OSCUnlock=88691c9234f844c1bf1c892994574136]697;Dir=/Users/michalmatynia/Desktop/NPM/2026/Gemini new Pull/clilauncher]697;Shell=zsh]697;ShellPath=/bin/zsh]697;PID=32483]697;ExitCode=0]697;TTY=/dev/ttys023]697;Log=]697;ZshAutosuggestionColor=]697;FigAutosuggestionColor=]697;User=michalmatynia[0m[27m[24m[J]697;StartPromptmichalmatynia@MacBook-Pro-2 clilauncher % ]697;EndPrompt]697;NewCmd=88691c9234f844c1bf1c892994574136[K[37C]697;StartPrompt]697;EndPrompt[37D[?2004h[?2004l
+zsh: locking failed for /Users/michalmatynia/.zsh_history: operation not permitted
+
+Script done on Tue Apr 21 12:24:05 2026

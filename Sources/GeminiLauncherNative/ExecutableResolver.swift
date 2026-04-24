@@ -56,6 +56,35 @@ struct ExecutableResolver {
         )
     }
 
+    func preferredLaunchPath(including existingPath: String? = nil) -> String {
+        let context = ExecutableSearchContextCache.current()
+        var seen: Set<String> = []
+        var directories: [String] = []
+
+        func appendDirectories(_ values: [String]) {
+            for value in values {
+                let normalized = expand(value)
+                guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+                seen.insert(normalized)
+                directories.append(normalized)
+            }
+        }
+
+        if let existingPath {
+            appendDirectories(
+                existingPath
+                    .split(separator: ":")
+                    .map { String($0) }
+            )
+        }
+        appendDirectories(context.loginShellPathDirectories)
+        appendDirectories(context.processPathDirectories)
+        appendDirectories(context.pathHelperPathDirectories)
+        appendDirectories(context.commonPathDirectories)
+
+        return directories.joined(separator: ":")
+    }
+
     func resolve(_ command: String, workingDirectory: String? = nil) -> ExecutableResolution {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

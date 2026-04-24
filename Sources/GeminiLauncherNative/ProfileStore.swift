@@ -2,10 +2,23 @@ import AppKit
 import Combine
 import Foundation
 
+enum StatePersistenceMode {
+    case automatic
+    case fileOnly
+}
+
+private enum ActivePersistenceBackend {
+    case mongo
+    case file
+}
+
 @MainActor
 final class ProfileStore: ObservableObject {
     private let fileManager = FileManager.default
+    private let persistenceMode: StatePersistenceMode
+    private let mongoStateStore: MongoStateStore?
     private(set) var stateURL: URL
+    private var activePersistenceBackend: ActivePersistenceBackend
     private var isApplyingStateNormalization = false
     private var pendingSaveTask: Task<Void, Never>?
     private static let saveDebounceNanoseconds: UInt64 = 400_000_000
@@ -18,7 +31,35 @@ final class ProfileStore: ObservableObject {
     @Published var bookmarks: [WorkspaceBookmark] { didSet { stateDidChange() } }
     @Published var workbenches: [LaunchWorkbench] { didSet { stateDidChange() } }
 
-    init() {
+    var persistenceLocationDescription: String {
+        switch activePersistenceBackend {
+        case .mongo:
+            return mongoStateStore?.locationDescription ?? stateURL.path
+        case .file:
+            return stateURL.path
+        }
+    }
+
+    var persistenceBackendDescription: String {
+        switch activePersistenceBackend {
+        case .mongo: return "Local MongoDB"
+        case .file: return "JSON file fallback"
+        }
+    }
+
+    var persistenceContainerPath: String {
+        switch activePersistenceBackend {
+        case .mongo:
+            return mongoStateStore?.dataDirectoryPath ?? stateURL.deletingLastPathComponent().path
+        case .file:
+            return stateURL.deletingLastPathComponent().path
+        }
+    }
+
+    init(persistenceMode: StatePersistenceMode = .automatic) {
+        self.persistenceMode = persistenceMode
+        mongoStateStore = persistenceMode == .automatic ? MongoStateStore() : nil
+        activePersistenceBackend = persistenceMode == .automatic ? .mongo : .file
         let folder = AppPaths.containerDirectory
         try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
         let resolvedStateURL = AppPaths.stateFileURL
@@ -30,7 +71,14 @@ final class ProfileStore: ObservableObject {
         let initialBookmarks: [WorkspaceBookmark]
         let initialWorkbenches: [LaunchWorkbench]
 
-        if let state = Self.loadState(at: resolvedStateURL) ?? Self.loadLegacyState(from: AppPaths.applicationSupportDirectory) {
+        let loadedBackend: ActivePersistenceBackend?
+        if let (state, backend) = Self.loadPersistedState(
+            primaryStore: mongoStateStore,
+            stateURL: resolvedStateURL,
+            appSupport: AppPaths.applicationSupportDirectory
+        ) {
+            activePersistenceBackend = backend
+            loadedBackend = backend
             initialProfiles = state.profiles
             initialSelectedProfileID = state.selectedProfileID ?? state.profiles.first?.id
             initialSettings = state.settings
@@ -38,6 +86,7 @@ final class ProfileStore: ObservableObject {
             initialBookmarks = state.bookmarks
             initialWorkbenches = state.workbenches
         } else {
+            loadedBackend = nil
             let defaultSettings = AppSettings()
             let starters = Self.defaultProfiles(settings: defaultSettings)
             initialProfiles = starters
@@ -56,6 +105,9 @@ final class ProfileStore: ObservableObject {
         bookmarks = initialBookmarks
         workbenches = initialWorkbenches
         normalizeState()
+        if persistenceMode == .automatic, loadedBackend == nil {
+            flushPendingSave()
+        }
 
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -91,6 +143,37 @@ final class ProfileStore: ObservableObject {
         return nil
     }
 
+    private static func loadPersistedState(
+        primaryStore: MongoStateStore?,
+        stateURL: URL,
+        appSupport: URL
+    ) -> (PersistedState, ActivePersistenceBackend)? {
+        if let primaryStore,
+           let state = try? primaryStore.loadState() {
+            return (state, .mongo)
+        }
+
+        if let state = loadState(at: stateURL) {
+            if let primaryStore {
+                if let _ = try? primaryStore.saveState(state) {
+                    return (state, .mongo)
+                }
+            }
+            return (state, .file)
+        }
+
+        if let state = loadLegacyState(from: appSupport) {
+            if let primaryStore {
+                if let _ = try? primaryStore.saveState(state) {
+                    return (state, .mongo)
+                }
+            }
+            return (state, .file)
+        }
+
+        return nil
+    }
+
     static func defaultProfiles(settings: AppSettings) -> [LaunchProfile] {
         let starters = LaunchTemplateCatalog.defaultProfiles(using: settings)
         return starters.isEmpty ? [LaunchProfile.starter(kind: .gemini, settings: settings)] : starters
@@ -120,6 +203,19 @@ final class ProfileStore: ObservableObject {
             var value = profiles[index]
             mutation(&value)
             profiles[index] = value
+        }
+    }
+
+    func updateProfiles(_ mutation: (inout [LaunchProfile]) -> Void) {
+        performBatchedMutation {
+            mutation(&profiles)
+        }
+    }
+
+    func applySettings(_ newSettings: AppSettings, mutatingProfiles mutation: ((inout [LaunchProfile]) -> Void)? = nil) {
+        performBatchedMutation {
+            settings = newSettings
+            mutation?(&profiles)
         }
     }
 
@@ -206,6 +302,11 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    private func uniqueMonitorSessionIDs(from plan: PlannedLaunch) -> [UUID] {
+        let sessionIDs = plan.items.compactMap(\.monitorSessionID)
+        return Array(NSOrderedSet(array: sessionIDs)) as? [UUID] ?? sessionIDs
+    }
+
     func recordLaunch(profile: LaunchProfile, plan: PlannedLaunch) {
         performBatchedMutation {
             history.insert(
@@ -214,7 +315,8 @@ final class ProfileStore: ObservableObject {
                     profileName: profile.name,
                     description: (plan.items.first?.description ?? profile.name) + (plan.postLaunchActions.isEmpty ? "" : " • +\(plan.postLaunchActions.count) post-launch"),
                     command: plan.items.first?.command ?? "",
-                    companionCount: max(plan.items.count - 1, 0)
+                    companionCount: max(plan.items.count - 1, 0),
+                    monitorSessionIDs: uniqueMonitorSessionIDs(from: plan)
                 ),
                 at: 0
             )
@@ -226,22 +328,36 @@ final class ProfileStore: ObservableObject {
             history.insert(
                 LaunchHistoryItem(
                     profileID: nil,
+                    workbenchID: workbench.id,
                     profileName: workbench.name,
                     description: "Workbench • \(workbench.role.displayName) • \(plan.items.count) tab(s), startup delay \(workbench.startupDelayMs)ms" + (plan.postLaunchActions.isEmpty ? "" : " • +\(plan.postLaunchActions.count) post-launch"),
                     command: plan.combinedCommandPreview,
-                    companionCount: max(plan.items.count - 1, 0)
+                    companionCount: max(plan.items.count - 1, 0),
+                    monitorSessionIDs: uniqueMonitorSessionIDs(from: plan)
                 ),
                 at: 0
             )
         }
     }
 
-    func relaunchLast() -> LaunchProfile? {
-        guard let latest = history.first else { return nil }
-        if let profileID = latest.profileID, let profile = profiles.first(where: { $0.id == profileID }) {
-            return profile
+    func relaunchTarget(for item: LaunchHistoryItem) -> LaunchHistoryTarget? {
+        if let profileID = item.profileID,
+           let profile = profiles.first(where: { $0.id == profileID }) {
+            return .profile(profile)
+        }
+        if let workbenchID = item.workbenchID,
+           let workbench = workbenches.first(where: { $0.id == workbenchID }) {
+            return .workbench(workbench)
         }
         return nil
+    }
+
+    func relaunchLastItem() -> LaunchHistoryItem? {
+        history.first(where: { self.relaunchTarget(for: $0) != nil })
+    }
+
+    func relaunchLastTarget() -> LaunchHistoryTarget? {
+        relaunchLastItem().flatMap { self.relaunchTarget(for: $0) }
     }
 
     func addBookmark(from profile: LaunchProfile) {
@@ -349,9 +465,17 @@ final class ProfileStore: ObservableObject {
     }
 
     private func writeStateToDisk() {
+        let state = currentPersistedState()
+        if let mongoStateStore,
+           let _ = try? mongoStateStore.saveState(state) {
+            activePersistenceBackend = .mongo
+            return
+        }
+
         do {
-            let data = try JSONEncoder.pretty.encode(currentPersistedState())
+            let data = try JSONEncoder.pretty.encode(state)
             try data.write(to: stateURL, options: [.atomic])
+            activePersistenceBackend = .file
         } catch {
             print("Failed to save state: \(error)")
         }
@@ -373,6 +497,7 @@ final class ProfileStore: ObservableObject {
 
     private func clampSettingLimitsWithoutNotifications() {
         var normalizedSettings = settings
+        normalizedSettings.bootstrapSessionRecordingIfNeeded()
         normalizedSettings.maxHistoryItems = max(1, min(1_000, normalizedSettings.maxHistoryItems))
         normalizedSettings.maxBookmarks = max(1, min(1_000, normalizedSettings.maxBookmarks))
 
@@ -500,141 +625,33 @@ final class ProfileStore: ObservableObject {
         flushPendingSave()
     }
 
+    func setStateURLForTesting(_ url: URL) {
+        stateURL = url
+    }
+
+    nonisolated static func propagateGeminiWorkingDirectoryChange(
+        in profiles: inout [LaunchProfile],
+        replacing oldWorkingDirectory: String,
+        with newWorkingDirectory: String,
+        excluding profileID: UUID? = nil
+    ) -> Int {
+        let oldPath = oldWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newPath = newWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !oldPath.isEmpty, !newPath.isEmpty, oldPath != newPath else { return 0 }
+
+        var updatedCount = 0
+        for index in profiles.indices {
+            guard profiles[index].agentKind == .gemini else { continue }
+            guard profiles[index].id != profileID else { continue }
+            guard profiles[index].workingDirectory == oldPath else { continue }
+            profiles[index].workingDirectory = newPath
+            updatedCount += 1
+        }
+        return updatedCount
+    }
+
     private static func uniquePreservingOrder<T: Hashable>(_ items: [T]) -> [T] {
         var seen: Set<T> = []
         return items.filter { seen.insert($0).inserted }
-    }
-}
-
-@MainActor
-final class LaunchLogger: ObservableObject {
-    @Published var entries: [LogEntry] = []
-
-    private let fileManager = FileManager.default
-    private let logFileURL: URL = AppPaths.runtimeLogFileURL
-    private var settings = ObservabilitySettings()
-    private let diskDateFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    var runtimeLogFileURL: URL { logFileURL }
-    var logDirectoryURL: URL { AppPaths.logsDirectoryURL }
-
-    init() {
-        ensureLogDirectoryExists()
-    }
-
-    func apply(settings: ObservabilitySettings) {
-        self.settings = settings
-        trimInMemoryEntriesIfNeeded()
-        ensureLogDirectoryExists()
-    }
-
-    func log(_ level: LogLevel, _ message: String, category: LogCategory = .app, details: String? = nil) {
-        if level == .debug, !settings.verboseLogging {
-            return
-        }
-
-        ensureLogDirectoryExists()
-        let normalizedDetails = details?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let now = Date()
-        if settings.deduplicateRepeatedEntries,
-           !entries.isEmpty,
-           entries[0].level == level,
-           entries[0].category == category,
-           entries[0].message == message,
-           entries[0].details == normalizedDetails,
-           now.timeIntervalSince(entries[0].timestamp) < 2.0 {
-            entries[0].timestamp = now
-            entries[0].repeatCount += 1
-        } else {
-            entries.insert(LogEntry(timestamp: now, level: level, category: category, message: message, details: normalizedDetails, repeatCount: 1), at: 0)
-        }
-
-        trimInMemoryEntriesIfNeeded()
-        persistLine(level: level, category: category, message: message, details: normalizedDetails, timestamp: now)
-    }
-
-    func debug(_ message: String, category: LogCategory = .app, details: String? = nil) {
-        log(.debug, message, category: category, details: details)
-    }
-
-    func clear() {
-        entries.removeAll()
-        do {
-            if fileManager.fileExists(atPath: logFileURL.path) {
-                try fileManager.removeItem(at: logFileURL)
-            }
-        } catch {
-            print("Failed to clear runtime log file: \(error)")
-        }
-    }
-
-    func revealLogDirectory() {
-        ensureLogDirectoryExists()
-        NSWorkspace.shared.activateFileViewerSelecting([logDirectoryURL])
-    }
-
-    private func ensureLogDirectoryExists() {
-        try? fileManager.createDirectory(at: logDirectoryURL, withIntermediateDirectories: true)
-    }
-
-    private func trimInMemoryEntriesIfNeeded() {
-        let limit = max(100, settings.maxInMemoryEntries)
-        if entries.count > limit {
-            entries = Array(entries.prefix(limit))
-        }
-    }
-
-    private func persistLine(level: LogLevel, category: LogCategory, message: String, details: String?, timestamp: Date) {
-        guard settings.persistLogsToDisk else { return }
-        rotateLogFileIfNeeded()
-        let line = formattedLine(level: level, category: category, message: message, details: details, timestamp: timestamp)
-        guard let data = (line + "\n").data(using: .utf8) else { return }
-
-        do {
-            if !fileManager.fileExists(atPath: logFileURL.path) {
-                try data.write(to: logFileURL, options: [.atomic])
-                return
-            }
-            let handle = try FileHandle(forWritingTo: logFileURL)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            print("Failed to persist runtime log: \(error)")
-        }
-    }
-
-    private func formattedLine(level: LogLevel, category: LogCategory, message: String, details: String?, timestamp: Date) -> String {
-        var line = "[\(diskDateFormatter.string(from: timestamp))] [\(level.rawValue.uppercased())] [\(category.rawValue.uppercased())] \(message)"
-        if let details, !details.isEmpty {
-            let flattened = details.replacingOccurrences(of: "\n", with: " ⏎ ")
-            line += " | \(flattened)"
-        }
-        return line
-    }
-
-    private func rotateLogFileIfNeeded() {
-        guard settings.persistLogsToDisk,
-              let attributes = try? fileManager.attributesOfItem(atPath: logFileURL.path),
-              let size = attributes[.size] as? NSNumber,
-              size.intValue > 5_000_000 else {
-            return
-        }
-
-        let backupURL = logDirectoryURL.appendingPathComponent("runtime.previous.log")
-        do {
-            if fileManager.fileExists(atPath: backupURL.path) {
-                try fileManager.removeItem(at: backupURL)
-            }
-            if fileManager.fileExists(atPath: logFileURL.path) {
-                try fileManager.moveItem(at: logFileURL, to: backupURL)
-            }
-        } catch {
-            print("Failed to rotate runtime log: \(error)")
-        }
     }
 }

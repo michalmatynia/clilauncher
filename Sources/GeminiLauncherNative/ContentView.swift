@@ -16,9 +16,10 @@ final class LaunchPreviewStore: ObservableObject {
 
 struct ContentView: View {
     @EnvironmentObject private var store: ProfileStore
-    @EnvironmentObject private var logger: LaunchLogger
-    @EnvironmentObject private var terminalMonitor: TerminalMonitorStore
     @StateObject private var preview = LaunchPreviewStore()
+
+    let logger: LaunchLogger
+    let terminalMonitor: TerminalMonitorStore
 
     @State private var selectedTab: LauncherTab = .launch
     @State private var bookmarkSelection: UUID?
@@ -26,6 +27,14 @@ struct ContentView: View {
     @State private var liveRefreshTask: Task<Void, Never>?
     @State private var showingDeleteProfileAlert = false
     @State private var showingDeleteWorkbenchAlert = false
+    @State private var showingUnsavedProfileChangesDialog = false
+    @State private var pendingProfileEditorAction: PendingProfileEditorAction?
+    @State private var profileEditorDraft: LaunchProfile?
+    @State private var settingsEditorDraft: AppSettings?
+    @State private var pendingSettingsProfileMutations: [PendingSettingsProfileMutation] = []
+    @State private var fireAndForgetPrompt = ""
+    @State private var isFireAndForgetEnabled = false
+    @State private var launchCenterPrimaryActionMode: LaunchCenterPrimaryActionMode = .launch
 
     private let commandBuilder = CommandBuilder()
     private let planner = LaunchPlanner()
@@ -34,6 +43,23 @@ struct ContentView: View {
     private let iTermLauncher = TerminalLauncherDispatcher()
     private let launcherExporter = LauncherExportService()
     private let companionLauncher = WorkspaceCompanionLauncher()
+
+    private enum PendingProfileEditorAction {
+        case add(AgentKind)
+        case duplicate(UUID)
+        case launch(UUID)
+        case openProfile(UUID)
+        case openWorkbench(UUID)
+        case launchWorkbench(UUID)
+        case select(UUID?)
+    }
+
+    private enum PendingSettingsProfileMutation {
+        case assignEnvironmentPreset(profileID: UUID, presetID: UUID)
+        case assignBootstrapPreset(profileID: UUID, presetID: UUID)
+        case clearEnvironmentPreset(UUID)
+        case clearBootstrapPreset(UUID)
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -77,12 +103,20 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(LauncherTab.settings)
         }
+        .background(WindowActivationBridge())
         .frame(minWidth: 1_240, minHeight: 820)
         .onAppear {
             logger.apply(settings: store.settings.observability)
+            synchronizeSelectedProfileDraft(force: true)
+            synchronizeLaunchPromptState(force: true)
+            synchronizeSettingsDraft(force: true)
             refreshLiveState()
             if selectedTab == .monitoring {
-                terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger)
+                terminalMonitor.refreshRecentSessions(
+                    settings: store.settings,
+                    logger: logger,
+                    workload: .interactive
+                )
             }
         }
         .onDisappear {
@@ -105,38 +139,161 @@ struct ContentView: View {
         }
         .onChange(of: selectedTab) { selection in
             if selection == .monitoring {
-                terminalMonitor.refreshRecentSessions(settings: store.settings, logger: logger)
+                terminalMonitor.refreshRecentSessions(
+                    settings: store.settings,
+                    logger: logger,
+                    workload: .interactive
+                )
+            } else if selection == .profiles {
+                synchronizeSelectedProfileDraft()
+                refreshSelectedProfileLiveState()
+            } else if selection == .settings {
+                synchronizeSettingsDraft()
             } else if selection == .launch {
                 scheduleLiveStateRefresh(immediate: true, includeITermDiscovery: true)
             } else if selection == .workbenches {
                 scheduleLiveStateRefresh(immediate: true)
             }
         }
-        .onChange(of: store.selectedProfileID) { _ in scheduleLiveStateRefresh(immediate: true) }
+        .onChange(of: store.selectedProfileID) { _ in
+            synchronizeSelectedProfileDraft(force: true)
+            synchronizeLaunchPromptState(force: true)
+            if selectedTab == .profiles {
+                refreshSelectedProfileLiveState()
+            } else {
+                scheduleLiveStateRefresh(immediate: true)
+            }
+        }
         .onChange(of: workbenchSelection) { _ in scheduleLiveStateRefresh(immediate: true) }
         .onChange(of: store.settings.observability) { _ in
             logger.apply(settings: store.settings.observability)
         }
+        .onChange(of: store.settings) { _ in
+            synchronizeSettingsDraft()
+        }
         .onChange(of: liveRefreshSettingsSignature) { _ in scheduleLiveStateRefresh() }
-        .onChange(of: selectedProfilePlanRefreshSignature) { _ in scheduleLiveStateRefresh() }
-        .onChange(of: selectedWorkbenchPlanRefreshSignature) { _ in scheduleLiveStateRefresh() }
+        .onChange(of: selectedProfilePlanRefreshSignature) { _ in
+            guard selectedTab == .launch else { return }
+            scheduleLiveStateRefresh()
+        }
+        .onChange(of: selectedWorkbenchPlanRefreshSignature) { _ in
+            guard selectedTab == .workbenches else { return }
+            scheduleLiveStateRefresh()
+        }
+        .confirmationDialog("Unsaved Profile Changes", isPresented: $showingUnsavedProfileChangesDialog, titleVisibility: .visible) {
+            Button("Save Changes") {
+                resolvePendingProfileEditorAction(saveChanges: true)
+            }
+            Button("Discard Changes", role: .destructive) {
+                resolvePendingProfileEditorAction(saveChanges: false)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingProfileEditorAction = nil
+            }
+        } message: {
+            Text("Save or discard the current profile draft before continuing.")
+        }
+    }
+
+    private var selectedProfileEditorProfile: LaunchProfile? {
+        guard let selected = store.selectedProfile else { return nil }
+        if let draft = profileEditorDraft, draft.id == selected.id {
+            return draft
+        }
+        return selected
     }
 
     private var selectedProfileBinding: Binding<LaunchProfile>? {
-        guard store.selectedIndex != nil else { return nil }
+        guard selectedProfileEditorProfile != nil else { return nil }
         return Binding(
             get: {
-                guard let index = store.selectedIndex else {
-                    return ProfileStore.fallbackStarterProfile(settings: store.settings)
-                }
-                return store.profiles[index]
+                selectedProfileEditorProfile ?? ProfileStore.fallbackStarterProfile(settings: store.settings)
             },
             set: { newValue in
-                store.updateSelected { updated in
-                    updated = newValue
+                if let selected = store.selectedProfile,
+                   newValue.id == selected.id,
+                   newValue == selected {
+                    profileEditorDraft = nil
+                } else {
+                    profileEditorDraft = newValue
                 }
             }
         )
+    }
+
+    private var settingsEditorBinding: Binding<AppSettings> {
+        Binding(
+            get: { settingsEditorDraft ?? store.settings },
+            set: { newValue in
+                settingsEditorDraft = newValue == store.settings ? nil : newValue
+            }
+        )
+    }
+
+    private var effectiveSettingsEditorSettings: AppSettings {
+        settingsEditorDraft ?? store.settings
+    }
+
+    private var isSettingsDraftDirty: Bool {
+        settingsEditorDraft != nil || !pendingSettingsProfileMutations.isEmpty
+    }
+
+    private var profileSidebarSelectionBinding: Binding<UUID?> {
+        Binding(
+            get: { store.selectedProfileID },
+            set: { newValue in
+                guard newValue != store.selectedProfileID else { return }
+                requestProfileEditorAction(.select(newValue))
+            }
+        )
+    }
+
+    private var diagnosticsUpdateTerminalDisplayName: String {
+        store.selectedProfile?.terminalApp.displayName ?? store.settings.defaultTerminalApp.displayName
+    }
+
+    private func launchDiagnosticsUpdate(for status: ToolStatus) {
+        guard let command = status.updateCommand else { return }
+        ToolUpdateService.launchInTerminal(
+            command: command,
+            toolName: status.name,
+            profile: store.selectedProfile,
+            settings: store.settings,
+            logger: logger
+        )
+    }
+
+    private func copyDiagnosticsUpdateCommand(for status: ToolStatus) {
+        guard let command = status.updateCommand else { return }
+        ClipboardService.copy(command)
+        logger.log(.info, "Copied update command for \(status.name).", category: .diagnostics, details: command)
+    }
+
+    private func launchProfileUpdate(for profile: LaunchProfile) {
+        guard let command = profile.resolvedUpdateCommand else {
+            logger.log(.error, "No update command is configured for \(profile.name).", category: .diagnostics)
+            return
+        }
+
+        let toolName = profile.agentKind == .gemini ? profile.geminiFlavor.displayName : profile.agentKind.displayName
+        ToolUpdateService.launchInTerminal(
+            command: command,
+            toolName: toolName,
+            profile: profile,
+            settings: store.settings,
+            logger: logger
+        )
+    }
+
+    private func openDiagnosticsDocumentation(for status: ToolStatus) {
+        guard let documentation = status.installDocumentation,
+              let url = URL(string: documentation) else {
+            logger.log(.error, "Documentation URL is invalid for \(status.name).", category: .diagnostics, details: status.installDocumentation)
+            return
+        }
+
+        NSWorkspace.shared.open(url)
+        logger.log(.info, "Opened provider documentation for \(status.name).", category: .diagnostics, details: documentation)
     }
 
     private var selectedBookmarkBinding: Binding<WorkspaceBookmark>? {
@@ -175,6 +332,10 @@ struct ContentView: View {
     private var selectedProfilePlanRefreshSignature: String {
         guard let profile = store.selectedProfile else { return "none" }
 
+        return launchSignatureIncludingCompanions(for: profile)
+    }
+
+    private func launchSignatureIncludingCompanions(for profile: LaunchProfile) -> String {
         var components = [profileLaunchSignature(for: profile)]
         if profile.autoLaunchCompanions {
             components.append(contentsOf: profile.companionProfileIDs.map { profileID in
@@ -216,13 +377,13 @@ struct ContentView: View {
         return components.joined(separator: "\u{1E}")
     }
 
-    private var selectedEnvironmentPreset: EnvironmentPreset? {
-        guard let presetID = store.selectedProfile?.environmentPresetID else { return nil }
+    private func selectedEnvironmentPreset(for profile: LaunchProfile?) -> EnvironmentPreset? {
+        guard let presetID = profile?.environmentPresetID else { return nil }
         return store.settings.environmentPresets.first { $0.id == presetID }
     }
 
-    private var selectedBootstrapPreset: ShellBootstrapPreset? {
-        guard let presetID = store.selectedProfile?.bootstrapPresetID else { return nil }
+    private func selectedBootstrapPreset(for profile: LaunchProfile?) -> ShellBootstrapPreset? {
+        guard let presetID = profile?.bootstrapPresetID else { return nil }
         return store.settings.shellBootstrapPresets.first { $0.id == presetID }
     }
 
@@ -261,62 +422,11 @@ struct ContentView: View {
             selectedBootstrapPresetSignature = ""
         }
 
-        var components = [
-            profile.id.uuidString,
-            profile.agentKind.rawValue,
-            profile.workingDirectory,
-            profile.terminalApp.rawValue,
-            profile.iTermProfile,
-            profile.openMode.rawValue,
-            profile.extraCLIArgs,
-            profile.shellBootstrapCommand,
-            String(profile.openWorkspaceInFinderOnLaunch),
-            String(profile.openWorkspaceInVSCodeOnLaunch),
-            String(profile.tabLaunchDelayMs),
-            environmentEntriesSignature(profile.environmentEntries),
+        let components = [
+            profile.launchStateSignatureToken,
             selectedEnvironmentPresetSignature,
-            selectedBootstrapPresetSignature,
-            String(profile.autoLaunchCompanions),
-            profile.autoLaunchCompanions ? profile.companionProfileIDs.map(\.uuidString).joined(separator: "\u{1F}") : ""
+            selectedBootstrapPresetSignature
         ]
-
-        components.append(contentsOf: [
-            profile.geminiFlavor.rawValue,
-            profile.geminiLaunchMode.rawValue,
-            profile.geminiWrapperCommand,
-            profile.geminiISOHome,
-            profile.geminiInitialModel,
-            profile.geminiModelChain,
-            String(profile.geminiResumeLatest),
-            String(profile.geminiKeepTryMax),
-            profile.geminiAutoContinueMode.rawValue,
-            String(profile.geminiAutoAllowSessionPermissions),
-            String(profile.geminiAutomationEnabled),
-            String(profile.geminiNeverSwitch),
-            String(profile.geminiQuietChildNodeWarnings),
-            String(profile.geminiRawOutput),
-            String(profile.geminiManualOverrideMs),
-            profile.geminiHotkeyPrefix,
-            profile.geminiAutomationRunnerPath,
-            profile.nodeExecutable,
-            profile.copilotExecutable,
-            profile.copilotMode.rawValue,
-            profile.copilotModel,
-            profile.copilotHome,
-            profile.copilotInitialPrompt,
-            String(profile.copilotMaxAutopilotContinues),
-            profile.codexExecutable,
-            profile.codexMode.rawValue,
-            profile.codexModel,
-            profile.claudeExecutable,
-            profile.claudeModel,
-            profile.kiroExecutable,
-            profile.kiroMode.rawValue,
-            profile.ollamaExecutable,
-            profile.ollamaIntegration.rawValue,
-            profile.ollamaModel,
-            String(profile.ollamaConfigOnly)
-        ])
 
         return components.joined(separator: "\u{1E}")
     }
@@ -332,15 +442,23 @@ struct ContentView: View {
         LaunchCenterPane(
             preview: preview,
             profile: store.selectedProfile,
-            selectedEnvironmentPreset: selectedEnvironmentPreset,
-            selectedBootstrapPreset: selectedBootstrapPreset,
+            selectedEnvironmentPreset: selectedEnvironmentPreset(for: store.selectedProfile),
+            selectedBootstrapPreset: selectedBootstrapPreset(for: store.selectedProfile),
             featuredWorkbenches: featuredWorkbenches,
             bookmarks: store.bookmarks,
             cautionMessages: store.selectedProfile.map { LaunchTemplateCatalog.cautions(for: $0) } ?? [],
             isVSCodeAvailable: preview.isVSCodeAvailable,
             favoriteProfiles: store.profiles.filter(\.isFavorite),
+            primaryActionMode: $launchCenterPrimaryActionMode,
             launchSelectedProfile: launchSelectedProfile,
-            duplicateSelectedProfile: store.duplicateSelectedProfile,
+            launchProfileUpdate: {
+                guard let profile = store.selectedProfile else { return }
+                launchProfileUpdate(for: profile)
+            },
+            duplicateSelectedProfile: {
+                guard let profileID = store.selectedProfile?.id else { return }
+                requestProfileEditorAction(.duplicate(profileID))
+            },
             applyPreset: { preset in
                 store.updateSelected { $0.applyBehaviorPreset(preset) }
             },
@@ -362,9 +480,15 @@ struct ContentView: View {
             },
             exportSelectedProfileLauncher: exportSelectedProfileLauncher,
             launchQuick: launchQuick,
+            updateQuick: updateQuick,
+            canUpdateQuickLaunch: { template in
+                preferredQuickLaunchProfile(for: template).resolvedUpdateCommand != nil
+            },
             launchFavorite: { profile in
-                store.selectedProfileID = profile.id
-                launchSelectedProfile()
+                requestProfileEditorAction(.launch(profile.id))
+            },
+            updateFavorite: { profile in
+                launchProfileUpdate(for: profile)
             },
             createWorkbenchFromCurrentProfile: addWorkbenchFromCurrentSelection,
             launchWorkbench: launch,
@@ -386,7 +510,13 @@ struct ContentView: View {
                 guard let plan = preview.planPreview else { return }
                 exportLauncher(plan: plan, suggestedName: (store.selectedProfile?.name ?? "Launch") + ".command")
             },
-            toggleAutomation: toggleSelectedProfileAutomation
+            toggleAutomation: toggleSelectedProfileAutomation,
+            selectedGeminiModelMode: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiModelMode : nil,
+            setSelectedGeminiModelMode: { mode in
+                store.updateSelected { $0.geminiModelMode = mode }
+            },
+            fireAndForgetPrompt: $fireAndForgetPrompt,
+            isFireAndForgetEnabled: $isFireAndForgetEnabled
         )
     }
 
@@ -394,13 +524,12 @@ struct ContentView: View {
         HSplitView {
             ProfilesSidebarPane(
                 profiles: store.profiles,
-                selectedProfileID: $store.selectedProfileID,
+                selectedProfileID: profileSidebarSelectionBinding,
                 addProfile: { kind in
-                    store.addProfile(kind: kind)
+                    requestProfileEditorAction(.add(kind))
                 },
                 duplicateProfile: { profile in
-                    store.selectedProfileID = profile.id
-                    store.duplicateSelectedProfile()
+                    requestProfileEditorAction(.duplicate(profile.id))
                 },
                 bookmarkProfile: { profile in
                     store.addBookmark(from: profile)
@@ -430,6 +559,9 @@ struct ContentView: View {
             preview: preview,
             environmentPresets: store.settings.environmentPresets,
             shellBootstrapPresets: store.settings.shellBootstrapPresets,
+            hasUnsavedChanges: isSelectedProfileDraftDirty,
+            saveChanges: saveSelectedProfileDraft,
+            revertChanges: revertSelectedProfileDraft,
             defaultWorkingDirectory: store.settings.defaultWorkingDirectory,
             companionProfiles: store.profiles.filter { $0.id != profile.wrappedValue.id },
             mergedEnvironmentSummary: mergedEnvironmentSummary(for: profile.wrappedValue),
@@ -442,27 +574,27 @@ struct ContentView: View {
             useDefaultWorkingDirectory: {
                 profile.wrappedValue.workingDirectory = store.settings.defaultWorkingDirectory
             },
+            syncGeminiWorkingDirectoryAcrossProfiles: applySelectedGeminiWorkingDirectoryToAllGeminiProfiles,
                                 revealWorkingDirectory: {
                                     store.reveal(profile.wrappedValue.expandedWorkingDirectory)
                                 },
                                 revealISO: {
                                     store.reveal(profile.wrappedValue.expandedGeminiISOHome)
                                 },
+                                launchProfileUpdate: {
+                                    launchProfileUpdate(for: profile.wrappedValue)
+                                },
                                 manageSharedPresets: {
                                     selectedTab = .settings
                                 }, onAgentKindChanged: { newValue in
-                store.updateSelected { updated in
-                    updated.agentKind = newValue
-                    updated.applyKindDefaults(settings: store.settings)
-                }
+                profile.wrappedValue.agentKind = newValue
+                profile.wrappedValue.applyKindDefaults(settings: store.settings)
                                 },
             onGeminiFlavorChanged: {
-                store.updateSelected { updated in
-                    updated.applyGeminiFlavorDefaults()
-                }
+                profile.wrappedValue.applyGeminiFlavorDefaults()
             },
             launchSelectedProfile: launchSelectedProfile,
-            duplicateSelectedProfile: store.duplicateSelectedProfile,
+            duplicateSelectedProfile: duplicateSelectedProfileEditorDraft,
             applyPreset: { preset in
                 profile.wrappedValue.applyBehaviorPreset(preset)
             },
@@ -605,14 +737,25 @@ struct ContentView: View {
     private var historyTab: some View {
         HistoryTabPane(
             history: store.history,
-            relaunchLast: relaunchLast
+            relaunchLast: relaunchLast,
+            canRelaunchLast: store.relaunchLastTarget() != nil,
+            isItemRelaunchable: { item in
+                store.relaunchTarget(for: item) != nil
+            },
+            relaunchItem: relaunchHistoryItem,
+            openTarget: openHistoryItemTarget,
+            copyCommand: copyHistoryItemCommand,
+            openInMonitoring: openHistoryItemInMonitoring
         )
     }
 
     private var diagnosticsTab: some View {
         DiagnosticsTabPane(
             preview: preview,
-            logger: logger
+            updateTerminalDisplayName: diagnosticsUpdateTerminalDisplayName,
+            launchUpdateInTerminal: launchDiagnosticsUpdate,
+            copyUpdateCommand: copyDiagnosticsUpdateCommand,
+            openInstallDocumentation: openDiagnosticsDocumentation
         )
     }
 
@@ -627,14 +770,14 @@ struct ContentView: View {
     }
 
     private var monitoringTab: some View {
-        MonitoringDashboardView()
+        MonitoringDashboardView(isVisible: selectedTab == .monitoring)
     }
 
     private var keystrokesTab: some View {
         KeystrokesTabPane(
             selectedProfileName: store.selectedProfile?.name,
             activeProfilePrefix: resolvedProfileHotkeyPrefix,
-            selectedProfileAutomationMode: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiLaunchMode : nil,
+            selectedProfileAutomationMode: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.preparedForLaunch().geminiLaunchMode : nil,
             selectedProfileAutomationEnabled: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiAutomationEnabled : nil,
             defaultHotkeyPrefix: store.settings.defaultHotkeyPrefix,
             canToggleAutomation: store.selectedProfile?.agentKind == .gemini
@@ -645,11 +788,27 @@ struct ContentView: View {
 
     private var settingsTab: some View {
         SettingsTabPane(
-            store: store,
-            logger: logger,
-            terminalMonitor: terminalMonitor,
+            settings: settingsEditorBinding,
+            hasSelectedProfile: store.selectedProfile != nil,
+            runtimeLogFilePath: logger.runtimeLogFileURL.path,
             captureEnvironmentPresetFromSelectedProfile: captureEnvironmentPresetFromSelectedProfile,
             captureBootstrapPresetFromSelectedProfile: captureBootstrapPresetFromSelectedProfile,
+            removeEnvironmentPreset: removeEnvironmentPresetFromSettingsDraft,
+            removeShellBootstrapPreset: removeShellBootstrapPresetFromSettingsDraft,
+            testConnection: { settings in
+                terminalMonitor.testConnection(settings: settings, logger: logger)
+            },
+            revealTranscriptFolder: { settings in
+                terminalMonitor.revealTranscriptDirectory(settings: settings)
+            },
+            saveSettings: saveSettingsDraft,
+            revertSettings: revertSettingsDraft,
+            hasUnsavedChanges: isSettingsDraftDirty,
+            persistenceBackendDescription: store.persistenceBackendDescription,
+            persistenceLocationDescription: store.persistenceLocationDescription,
+            revealStateFolder: {
+                store.reveal(store.persistenceContainerPath)
+            },
             exportState: exportState,
             importState: importState
         )
@@ -672,20 +831,184 @@ struct ContentView: View {
         return "Shared: \(presetCount) • Profile: \(profileCount) • Effective: \(total)"
     }
 
+    private var isSelectedProfileDraftDirty: Bool {
+        guard let draft = profileEditorDraft, let selected = store.selectedProfile, draft.id == selected.id else { return false }
+        return draft != selected
+    }
+
+    private func requestProfileEditorAction(_ action: PendingProfileEditorAction) {
+        guard isSelectedProfileDraftDirty else {
+            performProfileEditorAction(action)
+            return
+        }
+        pendingProfileEditorAction = action
+        showingUnsavedProfileChangesDialog = true
+    }
+
+    private func resolvePendingProfileEditorAction(saveChanges: Bool) {
+        if saveChanges {
+            saveSelectedProfileDraft()
+        } else {
+            revertSelectedProfileDraft()
+        }
+
+        let action = pendingProfileEditorAction
+        pendingProfileEditorAction = nil
+        performProfileEditorAction(action)
+    }
+
+    private func performProfileEditorAction(_ action: PendingProfileEditorAction?) {
+        guard let action else { return }
+
+        switch action {
+        case let .add(kind):
+            store.addProfile(kind: kind)
+        case let .duplicate(profileID):
+            guard let profile = store.profiles.first(where: { $0.id == profileID }) else { return }
+            duplicateProfile(profile)
+        case let .launch(profileID):
+            store.selectedProfileID = profileID
+            launchSelectedProfile()
+        case let .openProfile(profileID):
+            store.selectedProfileID = profileID
+            selectedTab = .profiles
+        case let .openWorkbench(workbenchID):
+            guard store.workbenches.contains(where: { $0.id == workbenchID }) else { return }
+            workbenchSelection = workbenchID
+            selectedTab = .workbenches
+        case let .launchWorkbench(workbenchID):
+            guard let workbench = store.workbenches.first(where: { $0.id == workbenchID }) else { return }
+            launch(workbench: workbench)
+        case let .select(profileID):
+            store.selectedProfileID = profileID
+        }
+    }
+
+    private func synchronizeSelectedProfileDraft(force: Bool = false) {
+        guard let selected = store.selectedProfile else {
+            profileEditorDraft = nil
+            return
+        }
+        if force || profileEditorDraft?.id != selected.id || !isSelectedProfileDraftDirty {
+            profileEditorDraft = nil
+        }
+    }
+
+    private func synchronizeLaunchPromptState(force: Bool = false) {
+        guard force || fireAndForgetPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        fireAndForgetPrompt = Self.launchPromptDisplayText(for: store.selectedProfile)
+    }
+
+    private func synchronizeSettingsDraft(force: Bool = false) {
+        guard force || !isSettingsDraftDirty else { return }
+        settingsEditorDraft = nil
+        pendingSettingsProfileMutations = []
+    }
+
+    private func updateSettingsEditorDraft(_ mutation: (inout AppSettings) -> Void) {
+        var draft = effectiveSettingsEditorSettings
+        mutation(&draft)
+        settingsEditorDraft = draft == store.settings ? nil : draft
+    }
+
+    private func applyPendingSettingsProfileMutations(to profiles: inout [LaunchProfile]) {
+        for mutation in pendingSettingsProfileMutations {
+            switch mutation {
+            case let .assignEnvironmentPreset(profileID, presetID):
+                guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { continue }
+                profiles[index].environmentPresetID = presetID
+            case let .assignBootstrapPreset(profileID, presetID):
+                guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { continue }
+                profiles[index].bootstrapPresetID = presetID
+            case let .clearEnvironmentPreset(presetID):
+                for index in profiles.indices where profiles[index].environmentPresetID == presetID {
+                    profiles[index].environmentPresetID = nil
+                }
+            case let .clearBootstrapPreset(presetID):
+                for index in profiles.indices where profiles[index].bootstrapPresetID == presetID {
+                    profiles[index].bootstrapPresetID = nil
+                }
+            }
+        }
+    }
+
+    private func saveSelectedProfileDraft() {
+        guard let draft = profileEditorDraft, let selected = store.selectedProfile, draft.id == selected.id else { return }
+        let previousWorkingDirectory = selected.workingDirectory
+        var propagatedGeminiWorkspaceUpdates = 0
+
+        store.updateProfiles { profiles in
+            guard let selectedIndex = profiles.firstIndex(where: { $0.id == draft.id }) else { return }
+            profiles[selectedIndex] = draft
+            propagatedGeminiWorkspaceUpdates = propagateGeminiWorkingDirectoryChangeIfNeeded(
+                in: &profiles,
+                previousProfile: selected,
+                savedProfile: draft,
+                previousWorkingDirectory: previousWorkingDirectory
+            )
+        }
+        store.save()
+        profileEditorDraft = nil
+        refreshSelectedProfileLiveState()
+        if propagatedGeminiWorkspaceUpdates > 0 {
+            logger.log(
+                .success,
+                "Saved profile changes for \(draft.name) and synced the workspace path to \(propagatedGeminiWorkspaceUpdates) Gemini profile(s).",
+                category: .app
+            )
+        } else {
+            logger.log(.success, "Saved profile changes for \(draft.name).", category: .app)
+        }
+    }
+
+    private func revertSelectedProfileDraft() {
+        guard store.selectedProfile != nil else { return }
+        profileEditorDraft = nil
+        refreshSelectedProfileLiveState()
+        logger.log(.info, "Reverted unsaved profile changes.", category: .app)
+    }
+
+    private func saveSettingsDraft() {
+        let draft = effectiveSettingsEditorSettings
+        guard draft != store.settings || !pendingSettingsProfileMutations.isEmpty else {
+            store.save()
+            logger.log(.info, "Settings already match the saved state.", category: .state, details: store.persistenceLocationDescription)
+            return
+        }
+
+        store.applySettings(draft) { profiles in
+            applyPendingSettingsProfileMutations(to: &profiles)
+        }
+        store.save()
+        settingsEditorDraft = nil
+        pendingSettingsProfileMutations = []
+        refreshSelectedProfileLiveState()
+        logger.log(.success, "Saved settings.", category: .state, details: store.persistenceLocationDescription)
+    }
+
+    private func revertSettingsDraft() {
+        guard isSettingsDraftDirty else { return }
+        settingsEditorDraft = nil
+        pendingSettingsProfileMutations = []
+        logger.log(.info, "Reverted unsaved settings changes.", category: .state)
+    }
+
     private func captureEnvironmentPresetFromSelectedProfile() {
-        guard let profile = store.selectedProfile else { return }
+        guard let profile = selectedProfileEditorProfile ?? store.selectedProfile else { return }
         let entries = profile.environmentEntries.filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         var preset = EnvironmentPreset()
         preset.name = profile.name + " Env"
         preset.notes = profile.notes
         preset.entries = entries
-        store.settings.environmentPresets.insert(preset, at: 0)
-        store.updateSelected { $0.environmentPresetID = preset.id }
+        updateSettingsEditorDraft { settings in
+            settings.environmentPresets.insert(preset, at: 0)
+        }
+        pendingSettingsProfileMutations.append(.assignEnvironmentPreset(profileID: profile.id, presetID: preset.id))
         logger.log(.success, "Captured shared environment preset from \(profile.name).")
     }
 
     private func captureBootstrapPresetFromSelectedProfile() {
-        guard let profile = store.selectedProfile else { return }
+        guard let profile = selectedProfileEditorProfile ?? store.selectedProfile else { return }
         let command = profile.trimmedShellBootstrapCommand
         guard !command.isEmpty else {
             logger.log(.warning, "Selected profile does not have a shell bootstrap command to capture.")
@@ -695,9 +1018,89 @@ struct ContentView: View {
         preset.name = profile.name + " Bootstrap"
         preset.notes = profile.notes
         preset.command = command
-        store.settings.shellBootstrapPresets.insert(preset, at: 0)
-        store.updateSelected { $0.bootstrapPresetID = preset.id }
+        updateSettingsEditorDraft { settings in
+            settings.shellBootstrapPresets.insert(preset, at: 0)
+        }
+        pendingSettingsProfileMutations.append(.assignBootstrapPreset(profileID: profile.id, presetID: preset.id))
         logger.log(.success, "Captured shared shell bootstrap preset from \(profile.name).")
+    }
+
+    private func removeEnvironmentPresetFromSettingsDraft(_ presetID: UUID) {
+        updateSettingsEditorDraft { settings in
+            settings.environmentPresets.removeAll { $0.id == presetID }
+        }
+        pendingSettingsProfileMutations.append(.clearEnvironmentPreset(presetID))
+    }
+
+    private func removeShellBootstrapPresetFromSettingsDraft(_ presetID: UUID) {
+        updateSettingsEditorDraft { settings in
+            settings.shellBootstrapPresets.removeAll { $0.id == presetID }
+        }
+        pendingSettingsProfileMutations.append(.clearBootstrapPreset(presetID))
+    }
+
+    private func updateSelectedProfileEditorTarget(_ mutation: (inout LaunchProfile) -> Void) {
+        if let selected = store.selectedProfile,
+           var draft = profileEditorDraft,
+           draft.id == selected.id {
+            mutation(&draft)
+            profileEditorDraft = draft
+            return
+        }
+
+        store.updateSelected(mutation)
+    }
+
+    private func applySelectedGeminiWorkingDirectoryToAllGeminiProfiles() {
+        guard let profile = selectedProfileEditorProfile ?? store.selectedProfile,
+              profile.agentKind == .gemini else { return }
+
+        let workingDirectory = profile.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workingDirectory.isEmpty else {
+            logger.log(.warning, "Gemini workspace path is empty, so there is nothing to sync.", category: .app)
+            return
+        }
+
+        var updatedCount = 0
+        store.updateProfiles { profiles in
+            for index in profiles.indices where profiles[index].agentKind == .gemini {
+                if profiles[index].workingDirectory != workingDirectory {
+                    profiles[index].workingDirectory = workingDirectory
+                    updatedCount += 1
+                }
+            }
+        }
+
+        if let selected = store.selectedProfile,
+           var draft = profileEditorDraft,
+           draft.id == selected.id {
+            draft.workingDirectory = workingDirectory
+            profileEditorDraft = draft
+        }
+
+        guard updatedCount > 0 else {
+            logger.log(.info, "All Gemini profiles already use this workspace path.", category: .app, details: workingDirectory)
+            return
+        }
+
+        store.save()
+        refreshSelectedProfileLiveState()
+        logger.log(.success, "Applied workspace path to \(updatedCount) Gemini profile(s).", category: .app, details: workingDirectory)
+    }
+
+    private func propagateGeminiWorkingDirectoryChangeIfNeeded(
+        in profiles: inout [LaunchProfile],
+        previousProfile: LaunchProfile,
+        savedProfile: LaunchProfile,
+        previousWorkingDirectory: String
+    ) -> Int {
+        guard previousProfile.agentKind == .gemini, savedProfile.agentKind == .gemini else { return 0 }
+        return ProfileStore.propagateGeminiWorkingDirectoryChange(
+            in: &profiles,
+            replacing: previousWorkingDirectory,
+            with: savedProfile.workingDirectory,
+            excluding: savedProfile.id
+        )
     }
 
     private func scheduleLiveStateRefresh(immediate: Bool = false, includeITermDiscovery: Bool = false) {
@@ -731,15 +1134,16 @@ struct ContentView: View {
     }
 
     private func refreshSelectedProfileLiveState() {
-        guard let profile = store.selectedProfile else {
+        guard let profile = selectedTab == .profiles ? selectedProfileEditorProfile : store.selectedProfile else {
             preview.diagnostics = PreflightCheck()
             preview.planPreview = nil
             preview.commandPreview = nil
             return
         }
         preview.diagnostics = preflight.run(profile: profile, settings: store.settings, allProfiles: store.profiles)
-        preview.planPreview = try? planner.buildPlan(primary: profile, allProfiles: store.profiles, settings: store.settings)
-        preview.commandPreview = try? commandBuilder.buildLaunchResult(profile: profile, settings: store.settings)
+        let launchProfile = configuredLaunchProfile(for: profile, fallbackAction: "Preview selected profile", logChanges: false)
+        preview.planPreview = launchProfile.flatMap { try? planner.buildPlan(primary: $0, allProfiles: store.profiles, settings: store.settings) }
+        preview.commandPreview = launchProfile.flatMap { try? commandBuilder.buildLaunchResult(profile: $0, settings: store.settings) }
     }
 
     private func refreshSelectedWorkbenchLiveState() {
@@ -749,7 +1153,14 @@ struct ContentView: View {
             return
         }
         preview.selectedWorkbenchDiagnostics = preflight.run(workbench: workbench, profiles: store.profiles, bookmarks: store.bookmarks, settings: store.settings)
-        preview.workbenchPlanPreview = try? planner.buildWorkbenchPlan(workbench: workbench, profiles: store.profiles, bookmarks: store.bookmarks, settings: store.settings)
+        let launchProfiles = configuredLaunchProfiles(
+            for: profilesReferencedByWorkbench(workbench),
+            fallbackAction: "Preview workbench",
+            logChanges: false
+        )
+        preview.workbenchPlanPreview = launchProfiles.flatMap {
+            try? planner.buildWorkbenchPlan(workbench: workbench, profiles: $0, bookmarks: store.bookmarks, settings: store.settings)
+        }
     }
 
     private func refreshITermProfileDiscovery(includeITermDiscovery: Bool) {
@@ -766,13 +1177,172 @@ struct ContentView: View {
         }
     }
 
+    private func preferredQuickLaunchProfile(for template: LaunchTemplate) -> LaunchProfile {
+        let templateProfile = template.buildProfile(using: store.settings)
+        return Self.resolvedQuickLaunchProfile(
+            templateProfile: templateProfile,
+            selectedProfile: store.selectedProfile,
+            allProfiles: store.profiles
+        )
+    }
+
     private func launchQuick(_ template: LaunchTemplate) {
-        launch(profile: template.buildProfile(using: store.settings), recordHistory: false)
+        let baseProfile = preferredQuickLaunchProfile(for: template)
+        guard let launchProfile = maybeConfiguredProfile(for: baseProfile, fallbackAction: "Quick launch \(template.title)") else { return }
+        launch(profile: launchProfile, recordHistory: false)
+    }
+
+    private func updateQuick(_ template: LaunchTemplate) {
+        let profile = preferredQuickLaunchProfile(for: template)
+        launchProfileUpdate(for: profile)
     }
 
     private func launchSelectedProfile() {
-        guard let profile = store.selectedProfile else { return }
-        launch(profile: profile, recordHistory: true)
+        let baseProfile = selectedTab == .profiles ? selectedProfileEditorProfile : store.selectedProfile
+        guard let profile = baseProfile else { return }
+        guard let launchProfile = maybeConfiguredProfile(for: profile, fallbackAction: "Launch selected profile") else { return }
+        launch(profile: launchProfile, recordHistory: true)
+    }
+
+    private func duplicateSelectedProfileEditorDraft() {
+        guard let profile = selectedProfileEditorProfile ?? store.selectedProfile else { return }
+        duplicateProfile(profile)
+    }
+
+    private func duplicateProfile(_ profile: LaunchProfile) {
+        var copy = profile
+        copy.id = UUID()
+        copy.name = profile.name + " Copy"
+        store.profiles.append(copy)
+        store.selectedProfileID = copy.id
+        logger.log(.success, "Duplicated profile \(profile.name).", category: .app)
+    }
+
+    private func maybeConfiguredProfile(for profile: LaunchProfile, fallbackAction: String) -> LaunchProfile? {
+        configuredLaunchProfile(for: profile, fallbackAction: fallbackAction, logChanges: true)
+    }
+
+    private func configuredLaunchProfiles(for profiles: [LaunchProfile], fallbackAction: String, logChanges: Bool) -> [LaunchProfile]? {
+        var configured: [LaunchProfile] = []
+        configured.reserveCapacity(profiles.count)
+        for profile in profiles {
+            guard let adjusted = configuredLaunchProfile(for: profile, fallbackAction: fallbackAction, logChanges: logChanges) else {
+                return nil
+            }
+            configured.append(adjusted)
+        }
+        return configured
+    }
+
+    private func profilesReferencedByWorkbench(_ workbench: LaunchWorkbench) -> [LaunchProfile] {
+        workbench.profileIDs.compactMap { profileID in
+            store.profiles.first { $0.id == profileID }
+        }
+    }
+
+    private func configuredLaunchProfile(for profile: LaunchProfile, fallbackAction: String, logChanges: Bool) -> LaunchProfile? {
+        guard profile.agentKind == .gemini else { return profile }
+
+        let trimmedPrompt = Self.resolvedGeminiLaunchPrompt(
+            launchCenterPrompt: fireAndForgetPrompt,
+            profilePrompt: profile.geminiInitialPrompt
+        )
+        var launchProfile = profile
+
+        if !trimmedPrompt.isEmpty {
+            launchProfile.configureGeminiPromptInjection(prompt: trimmedPrompt)
+            if logChanges {
+                logger.log(
+                    .info,
+                    "Launcher prompt injection requested for \(profile.name).",
+                    category: .launch,
+                    details: "chars=\(trimmedPrompt.count) • continuous=\(isFireAndForgetEnabled)"
+                )
+            }
+        }
+
+        if isFireAndForgetEnabled {
+            guard !trimmedPrompt.isEmpty else {
+                if logChanges {
+                    logger.log(.warning, "Fire-and-forget prompt is empty.", category: .launch, details: fallbackAction)
+                }
+                return nil
+            }
+
+            launchProfile.configureGeminiFireAndForget(prompt: trimmedPrompt)
+            if logChanges {
+                logger.log(
+                    .info,
+                    "Fire-and-forget launch requested for \(profile.name).",
+                    category: .launch,
+                    details: "continuous=true • chars=\(trimmedPrompt.count)"
+                )
+            }
+        }
+
+        let stabilizedAutoModelLaunch =
+            launchProfile.geminiModelMode == .auto &&
+            launchProfile.geminiLaunchMode == .directWrapper
+        launchProfile.stabilizeGeminiAutoModelModeLaunch()
+        if stabilizedAutoModelLaunch && launchProfile.geminiLaunchMode == .automationRunner && logChanges {
+            logger.log(
+                .info,
+                "Using automation runner mode for Gemini Auto model switching.",
+                category: .launch,
+                details: fallbackAction
+            )
+        }
+
+        let stabilizedPromptInjectionLaunch =
+            !launchProfile.geminiInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            launchProfile.geminiLaunchMode == .directWrapper
+        launchProfile.stabilizeGeminiPromptInjectionLaunch()
+        if stabilizedPromptInjectionLaunch && launchProfile.geminiLaunchMode == .automationRunner && logChanges {
+            logger.log(
+                .info,
+                "Using automation runner mode for Gemini startup stats capture before prompt injection.",
+                category: .launch,
+                details: fallbackAction
+            )
+        }
+        return launchProfile
+    }
+
+    static func resolvedGeminiLaunchPrompt(launchCenterPrompt: String, profilePrompt: String) -> String {
+        let trimmedLaunchCenterPrompt = launchCenterPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLaunchCenterPrompt.isEmpty {
+            return trimmedLaunchCenterPrompt
+        }
+        return profilePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func launchPromptDisplayText(for profile: LaunchProfile?) -> String {
+        guard let profile, profile.agentKind == .gemini else { return "" }
+        return profile.geminiInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func resolvedQuickLaunchProfile(
+        templateProfile: LaunchProfile,
+        selectedProfile: LaunchProfile?,
+        allProfiles: [LaunchProfile]
+    ) -> LaunchProfile {
+        guard templateProfile.agentKind == .gemini else {
+            return templateProfile
+        }
+
+        if let selectedGeminiProfile = selectedProfile,
+           selectedGeminiProfile.agentKind == .gemini,
+           selectedGeminiProfile.geminiFlavor == templateProfile.geminiFlavor {
+            return selectedGeminiProfile
+        }
+
+        if let savedGeminiProfile = allProfiles.first(where: {
+            $0.agentKind == .gemini && $0.geminiFlavor == templateProfile.geminiFlavor
+        }) {
+            return savedGeminiProfile
+        }
+
+        return templateProfile
     }
 
     private func launch(profile: LaunchProfile, recordHistory: Bool) {
@@ -840,20 +1410,81 @@ struct ContentView: View {
         var profile = baseProfile
         profile.workingDirectory = bookmark.path
         profile.name = baseProfile.name + " @ " + bookmark.name
-        launch(profile: profile, recordHistory: false)
+        guard let launchProfile = maybeConfiguredProfile(for: profile, fallbackAction: "Launch bookmark \(bookmark.name)") else { return }
+        launch(profile: launchProfile, recordHistory: false)
         store.touchBookmark(bookmark.id)
     }
 
     private func relaunchLast() {
-        guard let latest = store.history.first else {
+        guard !store.history.isEmpty else {
             logger.log(.info, "No launch history available yet.")
             return
         }
-        if let profileID = latest.profileID, let profile = store.profiles.first(where: { $0.id == profileID }) {
-            launch(profile: profile, recordHistory: true)
-        } else {
-            logger.log(.warning, "Last launch profile is no longer available.")
+        guard let item = store.relaunchLastItem() else {
+            logger.log(.warning, "No relaunchable history entries are currently available.")
+            return
         }
+        relaunchHistoryItem(item)
+    }
+
+    private func relaunchHistoryItem(_ item: LaunchHistoryItem) {
+        if let profileID = item.profileID,
+           store.profiles.contains(where: { $0.id == profileID }) {
+            requestProfileEditorAction(.launch(profileID))
+        } else if let workbenchID = item.workbenchID,
+                  store.workbenches.contains(where: { $0.id == workbenchID }) {
+            requestProfileEditorAction(.launchWorkbench(workbenchID))
+        } else if item.profileID != nil {
+            logger.log(.warning, "Recorded launch profile is no longer available.")
+        } else if item.workbenchID != nil || item.isWorkbenchLaunch {
+            logger.log(.warning, item.workbenchID == nil
+                ? "This legacy workbench history entry cannot be relaunched because it does not store a workbench identifier."
+                : "Recorded launch workbench is no longer available.")
+        } else {
+            logger.log(.warning, "This history entry cannot be relaunched.")
+        }
+    }
+
+    private func relaunchHistoryTarget(_ target: LaunchHistoryTarget, fallbackAction: String) {
+        switch target {
+        case let .profile(profile):
+            guard let launchProfile = maybeConfiguredProfile(for: profile, fallbackAction: fallbackAction) else { return }
+            launch(profile: launchProfile, recordHistory: true)
+        case let .workbench(workbench):
+            launch(workbench: workbench)
+        }
+    }
+
+    private func openHistoryItemTarget(_ item: LaunchHistoryItem) {
+        if let profileID = item.profileID,
+           store.profiles.contains(where: { $0.id == profileID }) {
+            requestProfileEditorAction(.openProfile(profileID))
+        } else if let workbenchID = item.workbenchID,
+                  store.workbenches.contains(where: { $0.id == workbenchID }) {
+            requestProfileEditorAction(.openWorkbench(workbenchID))
+        } else if item.profileID != nil {
+            logger.log(.warning, "Recorded launch profile is no longer available.")
+        } else if item.workbenchID != nil || item.isWorkbenchLaunch {
+            logger.log(.warning, item.workbenchID == nil
+                ? "This legacy workbench history entry cannot be opened because it does not store a workbench identifier."
+                : "Recorded launch workbench is no longer available.")
+        } else {
+            logger.log(.warning, "This history entry does not have an openable target.")
+        }
+    }
+
+    private func copyHistoryItemCommand(_ item: LaunchHistoryItem) {
+        ClipboardService.copy(item.command)
+        logger.log(.info, "Copied history command for \(item.profileName).", category: .launch, details: item.command)
+    }
+
+    private func openHistoryItemInMonitoring(_ item: LaunchHistoryItem) {
+        guard !item.monitorSessionIDs.isEmpty else {
+            logger.log(.warning, "No monitored session is linked to this history item yet.", category: .monitoring)
+            return
+        }
+        terminalMonitor.ensureSessionsVisible(sessionIDs: item.monitorSessionIDs, settings: store.settings, logger: logger, resetFilters: true)
+        selectedTab = .monitoring
     }
 
     private func toggleSelectedProfileAutomation() {
@@ -914,7 +1545,14 @@ struct ContentView: View {
             details: "profiles=\(workbench.profileIDs.count), role=\(workbench.role.rawValue), startupDelayMs=\(workbench.startupDelayMs)"
         )
         do {
-            let basePlan = try planner.buildWorkbenchPlan(workbench: workbench, profiles: store.profiles, bookmarks: store.bookmarks, settings: store.settings)
+            guard let launchProfiles = configuredLaunchProfiles(
+                for: profilesReferencedByWorkbench(workbench),
+                fallbackAction: "Launch workbench \(workbench.name)",
+                logChanges: true
+            ) else {
+                return
+            }
+            let basePlan = try planner.buildWorkbenchPlan(workbench: workbench, profiles: launchProfiles, bookmarks: store.bookmarks, settings: store.settings)
             logger.debug("Built workbench launch plan for \(workbench.name).", category: .launch, details: basePlan.combinedCommandPreview)
             if store.settings.confirmBeforeLaunch, !confirmLaunch(workbench: workbench, plan: basePlan) {
                 logger.log(.info, "Launch cancelled.", category: .launch)
@@ -1073,7 +1711,7 @@ struct ContentView: View {
         }
         let report = ApplicationDiagnosticReport(
             appSupportDirectory: AppPaths.containerDirectory.path,
-            stateFilePath: AppPaths.stateFileURL.path,
+            persistenceStorePath: store.persistenceLocationDescription,
             logFilePath: logger.runtimeLogFileURL.path,
             selectedTab: selectedTab.displayName,
             selectedProfileName: store.selectedProfile?.name,
@@ -1149,6 +1787,68 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
+        }
+    }
+}
+
+private struct WindowActivationBridge: NSViewRepresentable {
+    @MainActor
+    final class Coordinator {
+        private var activatedWindowNumbers: Set<Int> = []
+
+        func activateIfNeeded(window: NSWindow?) {
+            guard let window else { return }
+            let windowNumber = window.windowNumber
+            guard activatedWindowNumbers.insert(windowNumber).inserted else { return }
+
+            NSApp.setActivationPolicy(.regular)
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    final class BridgeView: NSView {
+        var onWindowAttached: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                self?.onWindowAttached?(self?.window)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> BridgeView {
+        let view = BridgeView()
+        view.onWindowAttached = { window in
+            context.coordinator.activateIfNeeded(window: window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: BridgeView, context: Context) {
+        context.coordinator.activateIfNeeded(window: nsView.window)
+    }
+}
+
+private enum LaunchCenterPrimaryActionMode: String, CaseIterable, Identifiable {
+    case launch
+    case updateCLI
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .launch:
+            return "Launch"
+        case .updateCLI:
+            return "Update CLI"
         }
     }
 }
@@ -1359,6 +2059,9 @@ private struct CurrentPlanDiagnosticsCard: View, Equatable {
 @MainActor
 private struct ProfileActionRow: View, Equatable {
     let commandPreview: LaunchResult?
+    let hasUnsavedChanges: Bool
+    let saveChanges: () -> Void
+    let revertChanges: () -> Void
     let launchSelectedProfile: () -> Void
     let duplicateSelectedProfile: () -> Void
     let applyPreset: (LaunchBehaviorPreset) -> Void
@@ -1369,7 +2072,7 @@ private struct ProfileActionRow: View, Equatable {
     let exportLauncher: () -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.commandPreviewSignature == rhs.commandPreviewSignature
+        lhs.commandPreviewSignature == rhs.commandPreviewSignature && lhs.hasUnsavedChanges == rhs.hasUnsavedChanges
     }
 
     nonisolated private var commandPreviewSignature: String {
@@ -1379,8 +2082,15 @@ private struct ProfileActionRow: View, Equatable {
 
     var body: some View {
         HStack {
-            Button("Launch", action: launchSelectedProfile)
+            Button("Save", action: saveChanges)
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut("s", modifiers: .command)
+                .help("Save profile changes")
+                .disabled(!hasUnsavedChanges)
+            Button("Revert", action: revertChanges)
+                .help("Discard unsaved profile changes")
+                .disabled(!hasUnsavedChanges)
+            Button("Launch", action: launchSelectedProfile)
             Button("Duplicate", action: duplicateSelectedProfile)
             Menu("Apply Preset") {
                 ForEach(LaunchBehaviorPreset.allCases) { preset in
@@ -1393,6 +2103,11 @@ private struct ProfileActionRow: View, Equatable {
             Button("Delete", action: deleteProfile)
                 .tint(.red)
             Spacer()
+            if hasUnsavedChanges {
+                Label("Unsaved changes", systemImage: "square.and.arrow.down.on.square")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if commandPreview != nil {
                 Button("Copy Command", action: copyCommand)
                 Button("Copy AppleScript", action: copyAppleScript)
@@ -1408,14 +2123,19 @@ private struct ProfileEditorPane: View {
 
     let environmentPresets: [EnvironmentPreset]
     let shellBootstrapPresets: [ShellBootstrapPreset]
+    let hasUnsavedChanges: Bool
+    let saveChanges: () -> Void
+    let revertChanges: () -> Void
     let defaultWorkingDirectory: String
     let companionProfiles: [LaunchProfile]
     let mergedEnvironmentSummary: String
     let parseTags: (String) -> [String]
     let chooseWorkingDirectory: () -> Void
     let useDefaultWorkingDirectory: () -> Void
+    let syncGeminiWorkingDirectoryAcrossProfiles: () -> Void
     let revealWorkingDirectory: () -> Void
     let revealISO: () -> Void
+    let launchProfileUpdate: () -> Void
     let manageSharedPresets: () -> Void
     let onAgentKindChanged: (AgentKind) -> Void
     let onGeminiFlavorChanged: () -> Void
@@ -1441,6 +2161,7 @@ private struct ProfileEditorPane: View {
                     parseTags: parseTags,
                     chooseWorkingDirectory: chooseWorkingDirectory,
                     useDefaultWorkingDirectory: useDefaultWorkingDirectory,
+                    syncGeminiWorkingDirectoryAcrossProfiles: syncGeminiWorkingDirectoryAcrossProfiles,
                     revealWorkingDirectory: revealWorkingDirectory,
                     manageSharedPresets: manageSharedPresets,
                     onAgentKindChanged: onAgentKindChanged
@@ -1448,7 +2169,8 @@ private struct ProfileEditorPane: View {
                 ProfileProviderSection(
                     profile: $profile,
                     onGeminiFlavorChanged: onGeminiFlavorChanged,
-                    revealISO: revealISO
+                    revealISO: revealISO,
+                    launchProfileUpdate: launchProfileUpdate
                 )
                 ProfileCompanionSection(
                     profile: $profile,
@@ -1457,6 +2179,9 @@ private struct ProfileEditorPane: View {
                 ProfileEnvironmentSection(profile: $profile)
                 ProfileActionRow(
                     commandPreview: preview.commandPreview,
+                    hasUnsavedChanges: hasUnsavedChanges,
+                    saveChanges: saveChanges,
+                    revertChanges: revertChanges,
                     launchSelectedProfile: launchSelectedProfile,
                     duplicateSelectedProfile: duplicateSelectedProfile,
                     applyPreset: applyPreset,
@@ -1540,6 +2265,7 @@ private struct ProfileGeneralSection: View {
     let parseTags: (String) -> [String]
     let chooseWorkingDirectory: () -> Void
     let useDefaultWorkingDirectory: () -> Void
+    let syncGeminiWorkingDirectoryAcrossProfiles: () -> Void
     let revealWorkingDirectory: () -> Void
     let manageSharedPresets: () -> Void
     let onAgentKindChanged: (AgentKind) -> Void
@@ -1567,6 +2293,10 @@ private struct ProfileGeneralSection: View {
                     TextField("Application / working directory", text: $profile.workingDirectory)
                     Button("Choose…", action: chooseWorkingDirectory)
                     Button("Use Default", action: useDefaultWorkingDirectory)
+                    if profile.agentKind == .gemini {
+                        Button("Sync All Gemini", action: syncGeminiWorkingDirectoryAcrossProfiles)
+                            .help("Apply this workspace path to Gemini, Gemini Preview, and Gemini Nightly saved profiles")
+                    }
                     Button("Reveal", action: revealWorkingDirectory)
                 }
                 Text("Gemini launches from this folder. Point it at your app path, for example `/Users/michalmatynia/Desktop/NPM/2026/Gemini new Pull/geminitestapp`. New profiles start from the Settings default: \(defaultWorkingDirectory)")
@@ -1634,6 +2364,7 @@ private struct ProfileProviderSection: View {
     @Binding var profile: LaunchProfile
     let onGeminiFlavorChanged: () -> Void
     let revealISO: () -> Void
+    let launchProfileUpdate: () -> Void
 
     @ViewBuilder
     var body: some View {
@@ -1642,7 +2373,8 @@ private struct ProfileProviderSection: View {
             ProfileGeminiProviderSection(
                 profile: $profile,
                 onGeminiFlavorChanged: onGeminiFlavorChanged,
-                revealISO: revealISO
+                revealISO: revealISO,
+                launchProfileUpdate: launchProfileUpdate
             )
 
         case .copilot:
@@ -1670,6 +2402,30 @@ private struct ProfileGeminiProviderSection: View {
     @Binding var profile: LaunchProfile
     let onGeminiFlavorChanged: () -> Void
     let revealISO: () -> Void
+    let launchProfileUpdate: () -> Void
+
+    private var geminiModelModeBinding: Binding<GeminiModelMode> {
+        Binding(
+            get: { profile.geminiModelMode },
+            set: { profile.geminiModelMode = $0 }
+        )
+    }
+
+    private var geminiModelModeDescription: String {
+        switch profile.geminiModelMode {
+        case .auto:
+            if profile.geminiLaunchMode != .automationRunner {
+                return "Auto uses the model chain and will switch this profile onto Automation Runner mode when launched."
+            }
+            return "Auto starts on the initial model, then uses the model chain to switch when Gemini hits usage or capacity limits."
+
+        case .fixed:
+            if profile.geminiLaunchMode != .automationRunner {
+                return "Fixed keeps Gemini on the initial model in direct wrapper mode."
+            }
+            return "Fixed keeps Gemini on the initial model and disables automatic model switching."
+        }
+    }
 
     var body: some View {
         GroupBox(profile.agentKind.displayName) {
@@ -1690,11 +2446,20 @@ private struct ProfileGeminiProviderSection: View {
                 }
                 Text(
                     profile.geminiLaunchMode == .automationRunner
-                    ? "Automation runner mode uses the bundled Gemini runner when this path is blank. Node is required. Install `@lydell/node-pty` or `node-pty` in the workspace for PTY hotkeys and prompt automation."
+                    ? "Automation runner mode uses the bundled Gemini runner when this path is blank. Node is required. Install `@lydell/node-pty` or `node-pty` in the workspace for the primary PTY backend; the runner can also fall back to a bundled `python3` PTY bridge for autonomous prompt handling when Python is available."
                     : "Direct wrapper mode launches the configured Gemini wrapper directly and skips the bundled automation runner."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+                HStack {
+                    Button(action: launchProfileUpdate) {
+                        Label("Update CLI", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Open the \(profile.geminiFlavor.displayName) CLI update command in a terminal.")
+                    Spacer()
+                }
 
                 TextField("Wrapper command", text: $profile.geminiWrapperCommand)
                 HStack {
@@ -1715,6 +2480,18 @@ private struct ProfileGeminiProviderSection: View {
                         profile.geminiModelChain = profile.geminiFlavor.defaultModelChain
                     }
                     .help("Reset model chain to flavor default")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Model mode", selection: geminiModelModeBinding) {
+                        ForEach(GeminiModelMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(geminiModelModeDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 HStack(alignment: .top) {
                     TextField("Initial prompt", text: $profile.geminiInitialPrompt, axis: .vertical)
@@ -1753,7 +2530,8 @@ private struct ProfileGeminiProviderSection: View {
 
                 Toggle("Resume latest", isOn: $profile.geminiResumeLatest)
                 Toggle("Automation enabled", isOn: $profile.geminiAutomationEnabled)
-                Toggle("YOLO Mode (Always Auto-Continue)", isOn: $profile.geminiYolo)
+                Toggle("CLI YOLO Flag (--yolo)", isOn: $profile.geminiYolo)
+                    .disabled(!profile.geminiFlavor.supportsYoloFlag)
                     .onChange(of: profile.geminiYolo) { newValue in
                         if newValue {
                             profile.geminiAutoContinueMode = .yolo
@@ -1766,8 +2544,12 @@ private struct ProfileGeminiProviderSection: View {
                             profile.geminiCapacityRetryMs = 5_000
                         }
                     }
+                if !profile.geminiFlavor.supportsYoloFlag {
+                    Text("\(profile.geminiFlavor.displayName) does not support the Gemini CLI `--yolo` flag. Use Auto continue = \(AutoContinueMode.yolo.displayName) for runner-level automation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Auto allow session permissions", isOn: $profile.geminiAutoAllowSessionPermissions)
-                Toggle("Never switch model", isOn: $profile.geminiNeverSwitch)
                 Toggle("Set HOME to ISO folder", isOn: $profile.geminiSetHomeToIso)
                 Toggle("Quiet child node warnings", isOn: $profile.geminiQuietChildNodeWarnings)
                 Toggle("Raw output", isOn: $profile.geminiRawOutput)
@@ -2330,8 +3112,54 @@ private struct WorkspaceBookmarksSidebarPane: View {
 }
 
 private struct HistoryTabPane: View {
+    private enum ScopeFilter: String, CaseIterable, Identifiable {
+        case all
+        case profiles
+        case workbenches
+        case monitored
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all: return "All"
+            case .profiles: return "Profiles"
+            case .workbenches: return "Workbenches"
+            case .monitored: return "Monitored"
+            }
+        }
+    }
+
     let history: [LaunchHistoryItem]
     let relaunchLast: () -> Void
+    let canRelaunchLast: Bool
+    let isItemRelaunchable: (LaunchHistoryItem) -> Bool
+    let relaunchItem: (LaunchHistoryItem) -> Void
+    let openTarget: (LaunchHistoryItem) -> Void
+    let copyCommand: (LaunchHistoryItem) -> Void
+    let openInMonitoring: (LaunchHistoryItem) -> Void
+
+    @State private var search = ""
+    @State private var scopeFilter: ScopeFilter = .all
+
+    private var filteredHistory: [LaunchHistoryItem] {
+        history.filter { item in
+            item.matchesSearchQuery(search) && matchesScope(item)
+        }
+    }
+
+    private func matchesScope(_ item: LaunchHistoryItem) -> Bool {
+        switch scopeFilter {
+        case .all:
+            return true
+        case .profiles:
+            return !item.isWorkbenchLaunch
+        case .workbenches:
+            return item.isWorkbenchLaunch
+        case .monitored:
+            return item.hasMonitoringLink
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2341,36 +3169,88 @@ private struct HistoryTabPane: View {
                 Spacer()
                 Button("Relaunch Last", action: relaunchLast)
                     .buttonStyle(.borderedProminent)
+                    .disabled(!canRelaunchLast)
             }
-            List {
-                ForEach(history) { item in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(item.profileName)
-                                .font(.headline)
-                            if item.profileID == nil {
-                                Text("Workbench")
-                                    .font(.caption)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(.blue.opacity(0.12), in: Capsule())
-                            }
-                            Spacer()
-                            Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(item.description)
-                            .foregroundStyle(.secondary)
-                        Text(item.command)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(2)
-                        if item.companionCount > 0 {
-                            Text("Opened \(item.companionCount) companion tab(s)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+            HStack {
+                TextField("Search history", text: $search)
+                if !search.isEmpty {
+                    Button("Clear") {
+                        search = ""
                     }
-                    .padding(.vertical, 4)
+                    .buttonStyle(.borderless)
+                }
+            }
+            Picker("History Scope", selection: $scopeFilter) {
+                ForEach(ScopeFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            List {
+                if filteredHistory.isEmpty {
+                    Text(search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scopeFilter == .all
+                         ? "No launch history yet."
+                         : "No history entries match your filters.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(filteredHistory) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(item.profileName)
+                                    .font(.headline)
+                                if item.isWorkbenchLaunch {
+                                    Text("Workbench")
+                                        .font(.caption)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(.blue.opacity(0.12), in: Capsule())
+                                }
+                                Spacer()
+                                Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(item.description)
+                                .foregroundStyle(.secondary)
+                            Text(item.command)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(2)
+                            if item.companionCount > 0 {
+                                Text("Opened \(item.companionCount) companion tab(s)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 8) {
+                                Button("Copy Command") {
+                                    copyCommand(item)
+                                }
+                                .buttonStyle(.link)
+                                if isItemRelaunchable(item) {
+                                    Button(item.isWorkbenchLaunch ? "Open Workbench" : "Open Profile") {
+                                        openTarget(item)
+                                    }
+                                    .buttonStyle(.link)
+                                    Button("Relaunch") {
+                                        relaunchItem(item)
+                                    }
+                                    .buttonStyle(.link)
+                                } else if item.hasRelaunchTarget {
+                                    Text("Target unavailable")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if !item.monitorSessionIDs.isEmpty {
+                                    Text(item.monitorSessionIDs.count == 1 ? "1 monitored session linked" : "\(item.monitorSessionIDs.count) monitored sessions linked")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Button("Open in Monitoring") {
+                                        openInMonitoring(item)
+                                    }
+                                    .buttonStyle(.link)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
             }
         }
@@ -2379,73 +3259,65 @@ private struct HistoryTabPane: View {
 }
 
 private struct SettingsTabPane: View {
-    @ObservedObject var store: ProfileStore
+    @Binding var settings: AppSettings
 
-    let logger: LaunchLogger
-    let terminalMonitor: TerminalMonitorStore
+    let hasSelectedProfile: Bool
+    let runtimeLogFilePath: String
     let captureEnvironmentPresetFromSelectedProfile: () -> Void
     let captureBootstrapPresetFromSelectedProfile: () -> Void
+    let removeEnvironmentPreset: (UUID) -> Void
+    let removeShellBootstrapPreset: (UUID) -> Void
+    let testConnection: (AppSettings) -> Void
+    let revealTranscriptFolder: (AppSettings) -> Void
+    let saveSettings: () -> Void
+    let revertSettings: () -> Void
+    let hasUnsavedChanges: Bool
+    let persistenceBackendDescription: String
+    let persistenceLocationDescription: String
+    let revealStateFolder: () -> Void
     let exportState: () -> Void
     let importState: () -> Void
 
-    private var settingsBinding: Binding<AppSettings> {
-        Binding(
-            get: { store.settings },
-            set: { store.settings = $0 }
-        )
-    }
-
     var body: some View {
         Form {
-            SettingsDefaultsSection(settings: settingsBinding)
+            SettingsDefaultsSection(settings: $settings)
             SettingsObservabilitySection(
-                settings: settingsBinding,
-                runtimeLogFilePath: logger.runtimeLogFileURL.path
+                settings: $settings,
+                runtimeLogFilePath: runtimeLogFilePath
             )
             SettingsEnvironmentPresetsSection(
-                settings: settingsBinding,
-                hasSelectedProfile: store.selectedProfile != nil,
+                settings: $settings,
+                hasSelectedProfile: hasSelectedProfile,
                 removePreset: removeEnvironmentPreset,
                 captureFromSelectedProfile: captureEnvironmentPresetFromSelectedProfile
             )
             SettingsShellBootstrapPresetsSection(
-                settings: settingsBinding,
-                hasSelectedProfile: store.selectedProfile != nil,
+                settings: $settings,
+                hasSelectedProfile: hasSelectedProfile,
                 removePreset: removeShellBootstrapPreset,
                 captureFromSelectedProfile: captureBootstrapPresetFromSelectedProfile
             )
             SettingsMonitoringSection(
-                settings: settingsBinding,
+                settings: $settings,
                 testConnection: {
-                    terminalMonitor.testConnection(settings: store.settings, logger: logger)
+                    testConnection(settings)
                 },
                 revealTranscriptFolder: {
-                    terminalMonitor.revealTranscriptDirectory(settings: store.settings)
+                    revealTranscriptFolder(settings)
                 }
             )
             SettingsDataSection(
-                revealStateFolder: {
-                    store.reveal(store.stateURL.deletingLastPathComponent().path)
-                },
+                saveSettings: saveSettings,
+                revertSettings: revertSettings,
+                hasUnsavedChanges: hasUnsavedChanges,
+                persistenceBackendDescription: persistenceBackendDescription,
+                persistenceLocationDescription: persistenceLocationDescription,
+                revealStateFolder: revealStateFolder,
                 exportState: exportState,
                 importState: importState
             )
         }
         .padding()
-    }
-
-    private func removeEnvironmentPreset(_ presetID: UUID) {
-        store.settings.environmentPresets.removeAll { $0.id == presetID }
-        for index in store.profiles.indices where store.profiles[index].environmentPresetID == presetID {
-            store.profiles[index].environmentPresetID = nil
-        }
-    }
-
-    private func removeShellBootstrapPreset(_ presetID: UUID) {
-        store.settings.shellBootstrapPresets.removeAll { $0.id == presetID }
-        for index in store.profiles.indices where store.profiles[index].bootstrapPresetID == presetID {
-            store.profiles[index].bootstrapPresetID = nil
-        }
     }
 }
 
@@ -2463,6 +3335,11 @@ private struct SettingsDefaultsSection: View {
             Text("Leave the default automation runner path blank to use the bundled Gemini automation runner shipped with the app.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Picker("Default terminal application", selection: $settings.defaultTerminalApp) {
+                ForEach(TerminalApp.allCases) { app in
+                    Text(app.displayName).tag(app)
+                }
+            }
             TextField("Default iTerm2 profile", text: $settings.defaultITermProfile)
             TextField("Default hotkey prefix", text: $settings.defaultHotkeyPrefix)
             TextField("Default shell bootstrap command", text: $settings.defaultShellBootstrapCommand, axis: .vertical)
@@ -2627,9 +3504,15 @@ private struct SettingsMonitoringSection: View {
 
     var body: some View {
         Section("Terminal Monitoring / MongoDB") {
-            Toggle("Enable terminal transcript monitoring", isOn: $settings.mongoMonitoring.enabled)
-            Toggle("Write captured transcript chunks into MongoDB", isOn: $settings.mongoMonitoring.enableMongoWrites)
+            Toggle("Monitor launched terminal sessions", isOn: $settings.mongoMonitoring.enabled)
+            Toggle("Record monitored sessions to local MongoDB", isOn: $settings.mongoMonitoring.enableMongoWrites)
                 .disabled(!settings.mongoMonitoring.enabled)
+            Text("When enabled, every launcher-driven session is wrapped for transcript capture and recorded into recent monitoring history.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Default capture mode is Output only. Switch to Input + output only if you intentionally want keystrokes recorded too.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Picker("Capture mode", selection: $settings.mongoMonitoring.captureMode) {
                 ForEach(TerminalTranscriptCaptureMode.allCases) { mode in
@@ -2650,7 +3533,7 @@ private struct SettingsMonitoringSection: View {
                 .disabled(!settings.mongoMonitoring.enabled || !settings.mongoMonitoring.enableMongoWrites)
             TextField("script executable", text: $settings.mongoMonitoring.scriptExecutable)
                 .disabled(!settings.mongoMonitoring.enabled)
-            TextField("Transcript directory", text: $settings.mongoMonitoring.transcriptDirectory)
+            TextField("Capture directory", text: $settings.mongoMonitoring.transcriptDirectory)
                 .disabled(!settings.mongoMonitoring.enabled)
 
             Stepper(value: $settings.mongoMonitoring.pollingIntervalMs, in: 250...5_000, step: 50) {
@@ -2696,11 +3579,11 @@ private struct SettingsMonitoringSection: View {
             .disabled(!settings.mongoMonitoring.enabled || !settings.mongoMonitoring.enableMongoWrites)
 
             Stepper(value: $settings.mongoMonitoring.localTranscriptRetentionDays, in: 1...3_650, step: 1) {
-                Text("Local transcript retention window: \(settings.mongoMonitoring.clampedLocalTranscriptRetentionDays) day(s)")
+                Text("Local capture retention window: \(settings.mongoMonitoring.clampedLocalTranscriptRetentionDays) day(s)")
             }
             .disabled(!settings.mongoMonitoring.enabled)
 
-            Toggle("Keep local transcript files after launch", isOn: $settings.mongoMonitoring.keepLocalTranscriptFiles)
+            Toggle("Keep local capture files after launch", isOn: $settings.mongoMonitoring.keepLocalTranscriptFiles)
                 .disabled(!settings.mongoMonitoring.enabled)
 
             if settings.mongoMonitoring.captureMode.usesScriptKeyLogging {
@@ -2712,23 +3595,40 @@ private struct SettingsMonitoringSection: View {
             HStack {
                 Button("Test Connection", action: testConnection)
                     .disabled(!settings.mongoMonitoring.enabled || !settings.mongoMonitoring.enableMongoWrites)
-                Button("Reveal Transcript Folder", action: revealTranscriptFolder)
+                Button("Reveal Capture Folder", action: revealTranscriptFolder)
             }
         }
     }
 }
 
 private struct SettingsDataSection: View {
+    let saveSettings: () -> Void
+    let revertSettings: () -> Void
+    let hasUnsavedChanges: Bool
+    let persistenceBackendDescription: String
+    let persistenceLocationDescription: String
     let revealStateFolder: () -> Void
     let exportState: () -> Void
     let importState: () -> Void
 
     var body: some View {
         Section("Data") {
+            if hasUnsavedChanges {
+                Text("Unsaved settings changes.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text("Persistence backend: \(persistenceBackendDescription) (\(persistenceLocationDescription))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack {
-                Button("Export State…", action: exportState)
-                Button("Import State…", action: importState)
-                Button("Reveal State Folder", action: revealStateFolder)
+                Button("Save Settings", action: saveSettings)
+                    .disabled(!hasUnsavedChanges)
+                Button("Revert", action: revertSettings)
+                    .disabled(!hasUnsavedChanges)
+                Button("Export Snapshot…", action: exportState)
+                Button("Import Snapshot…", action: importState)
+                Button("Reveal Persistence Folder", action: revealStateFolder)
             }
         }
     }
@@ -3099,7 +3999,9 @@ private struct LaunchCenterPane: View {
     let isVSCodeAvailable: Bool
     let favoriteProfiles: [LaunchProfile]
 
+    @Binding var primaryActionMode: LaunchCenterPrimaryActionMode
     let launchSelectedProfile: () -> Void
+    let launchProfileUpdate: () -> Void
     let duplicateSelectedProfile: () -> Void
     let applyPreset: (LaunchBehaviorPreset) -> Void
     let bookmarkWorkspace: () -> Void
@@ -3108,7 +4010,10 @@ private struct LaunchCenterPane: View {
     let openInVSCode: () -> Void
     let exportSelectedProfileLauncher: () -> Void
     let launchQuick: (LaunchTemplate) -> Void
+    let updateQuick: (LaunchTemplate) -> Void
+    let canUpdateQuickLaunch: (LaunchTemplate) -> Bool
     let launchFavorite: (LaunchProfile) -> Void
+    let updateFavorite: (LaunchProfile) -> Void
     let createWorkbenchFromCurrentProfile: () -> Void
     let launchWorkbench: (LaunchWorkbench) -> Void
     let editWorkbench: (UUID) -> Void
@@ -3116,6 +4021,48 @@ private struct LaunchCenterPane: View {
     let copyAppleScript: () -> Void
     let exportPlanLauncher: () -> Void
     let toggleAutomation: () -> Void
+    let selectedGeminiModelMode: GeminiModelMode?
+    let setSelectedGeminiModelMode: (GeminiModelMode) -> Void
+    @Binding var fireAndForgetPrompt: String
+    @Binding var isFireAndForgetEnabled: Bool
+    @FocusState private var isFireAndForgetPromptFocused: Bool
+
+    private var selectedGeminiModelModeBinding: Binding<GeminiModelMode> {
+        Binding(
+            get: { selectedGeminiModelMode ?? .auto },
+            set: { newValue in
+                setSelectedGeminiModelMode(newValue)
+            }
+        )
+    }
+
+    private var selectedGeminiModelModeDescription: String {
+        guard let profile, profile.agentKind == .gemini else {
+            return "No Gemini profile selected."
+        }
+
+        switch selectedGeminiModelMode ?? .auto {
+        case .auto:
+            if profile.geminiLaunchMode != .automationRunner {
+                return "Auto will promote this launch to Automation Runner mode so Gemini can skip to the next model when limits are hit."
+            }
+            return "Auto starts on the initial model, then skips to the next model in the chain when Gemini hits usage or capacity limits."
+
+        case .fixed:
+            if profile.geminiLaunchMode != .automationRunner {
+                return "Fixed keeps this launch on Direct Wrapper mode and stays on the initial model."
+            }
+            return "Fixed stays on the initial model and disables automatic model switching."
+        }
+    }
+
+    private var isUpdateMode: Bool {
+        primaryActionMode == .updateCLI
+    }
+
+    private var canUpdateSelectedProfile: Bool {
+        profile?.resolvedUpdateCommand != nil
+    }
 
     var body: some View {
         ScrollView {
@@ -3123,21 +4070,23 @@ private struct LaunchCenterPane: View {
                 currentSelectionCard
                 quickLaunchCard
                 quickFavoriteProfilesCard
-                featuredWorkbenchesCard
-                LaunchPlanPreviewCard(
-                    plan: preview.planPreview,
-                    suggestedName: (profile?.name ?? "Launch") + ".command",
-                    copyCombinedCommands: copyCombinedCommands,
-                    copyAppleScript: copyAppleScript,
-                    exportLauncher: exportPlanLauncher
-                )
-                .equatable()
-                launchPreflightCard
-                if !cautionMessages.isEmpty {
-                    ForEach(cautionMessages, id: \.self) { caution in
-                        GroupBox("Caution") {
-                            Text(caution)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                if !isUpdateMode {
+                    featuredWorkbenchesCard
+                    LaunchPlanPreviewCard(
+                        plan: preview.planPreview,
+                        suggestedName: (profile?.name ?? "Launch") + ".command",
+                        copyCombinedCommands: copyCombinedCommands,
+                        copyAppleScript: copyAppleScript,
+                        exportLauncher: exportPlanLauncher
+                    )
+                    .equatable()
+                    launchPreflightCard
+                    if !cautionMessages.isEmpty {
+                        ForEach(cautionMessages, id: \.self) { caution in
+                            GroupBox("Caution") {
+                                Text(caution)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -3199,9 +4148,36 @@ private struct LaunchCenterPane: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    HStack(spacing: 12) {
+                        Label("Action", systemImage: isUpdateMode ? "arrow.triangle.2.circlepath" : "play.fill")
+                            .font(.headline)
+                        Picker("Action", selection: $primaryActionMode) {
+                            ForEach(LaunchCenterPrimaryActionMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 260)
+                    }
+                    Text(
+                        isUpdateMode
+                            ? "Update mode is active. Click a CLI card below to run its update command in Terminal."
+                            : "Launch mode is active. Click a card below to open that CLI session."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     HStack {
-                        Button("Launch Selected", action: launchSelectedProfile)
+                        if isUpdateMode {
+                            Button(action: launchProfileUpdate) {
+                                Label("Update Selected CLI", systemImage: "arrow.triangle.2.circlepath")
+                            }
                             .buttonStyle(.borderedProminent)
+                            .disabled(!canUpdateSelectedProfile)
+                            .help("Run the configured CLI update command for this profile.")
+                        } else {
+                            Button("Launch Selected", action: launchSelectedProfile)
+                                .buttonStyle(.borderedProminent)
+                        }
                         Button("Duplicate", action: duplicateSelectedProfile)
                         Menu("Apply Preset") {
                             ForEach(LaunchBehaviorPreset.allCases) { preset in
@@ -3217,36 +4193,126 @@ private struct LaunchCenterPane: View {
                             .disabled(!isVSCodeAvailable)
                         Button("Export Launcher…", action: exportSelectedProfileLauncher)
                     }
+                    if isUpdateMode && !canUpdateSelectedProfile {
+                        Text("The selected profile does not expose a CLI update command. Choose Gemini, Claude, or Kiro from the cards below.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !isUpdateMode, profile.agentKind == .gemini {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("Model Mode", systemImage: "arrow.triangle.branch")
+                                    .font(.headline)
+                                Spacer()
+                                Picker("Model mode", selection: selectedGeminiModelModeBinding) {
+                                    ForEach(GeminiModelMode.allCases) { mode in
+                                        Text(mode.displayName).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(maxWidth: 220)
+                            }
+                            Text(selectedGeminiModelModeDescription)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("Launch Prompt", systemImage: "text.cursor")
+                                    .font(.headline)
+                                Toggle(isOn: $isFireAndForgetEnabled) {
+                                    Text("Fire & Forget")
+                                }
+                                .toggleStyle(.switch)
+                            }
+                            ZStack(alignment: .topLeading) {
+                                if fireAndForgetPrompt.isEmpty {
+                                    Text("Type a Gemini prompt to inject on launch")
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 8)
+                                        .allowsHitTesting(false)
+                                }
+
+                                TextEditor(text: $fireAndForgetPrompt)
+                                    .scrollContentBackground(.hidden)
+                                    .padding(4)
+                                    .focused($isFireAndForgetPromptFocused)
+                            }
+                            .frame(minHeight: 84)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(nsColor: .textBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 8))
+                            .onTapGesture {
+                                isFireAndForgetPromptFocused = true
+                            }
+                            Text(isFireAndForgetEnabled
+                                 ? "Gemini CLI clicks will inject this prompt and launch in continuous mode."
+                                 : "Gemini CLI clicks will inject this prompt on launch. Enable Fire & Forget for continuous mode.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } else {
                     Text("No profile selected.")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onChange(of: isFireAndForgetEnabled) { isEnabled in
+            if isEnabled {
+                DispatchQueue.main.async {
+                    isFireAndForgetPromptFocused = true
+                }
+            }
+        }
     }
 
     private var quickFavoriteProfilesCard: some View {
         if favoriteProfiles.isEmpty { return AnyView(EmptyView()) }
         return AnyView(
-            GroupBox("Quick Favorites") {
+            GroupBox(isUpdateMode ? "Favorite CLI Updates" : "Quick Favorites") {
                 VStack(alignment: .leading, spacing: 12) {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
                         ForEach(favoriteProfiles) { profile in
+                            let canTrigger = !isUpdateMode || profile.resolvedUpdateCommand != nil
                             Button {
-                                launchFavorite(profile)
+                                if isUpdateMode {
+                                    updateFavorite(profile)
+                                } else {
+                                    launchFavorite(profile)
+                                }
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Label(profile.name, systemImage: "star.fill")
+                                    Label(
+                                        profile.name,
+                                        systemImage: isUpdateMode ? "arrow.triangle.2.circlepath" : "star.fill"
+                                    )
                                         .font(.headline)
-                                    Text(profile.agentKind.displayName)
+                                    Text(
+                                        isUpdateMode
+                                            ? (profile.resolvedUpdateCommand != nil ? "Run update command" : "Update unavailable")
+                                            : profile.agentKind.displayName
+                                    )
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
                                 .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+                                .opacity(canTrigger ? 1 : 0.45)
                             }
                             .buttonStyle(.plain)
+                            .disabled(!canTrigger)
                         }
                     }
                 }
@@ -3255,27 +4321,45 @@ private struct LaunchCenterPane: View {
     }
 
     private var quickLaunchCard: some View {
-        GroupBox("Quick Launch") {
+        GroupBox(isUpdateMode ? "CLI Updates" : "Quick Launch") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Start a fresh iTerm2 session from a ready-made launcher template.")
+                Text(
+                    isUpdateMode
+                        ? "Update mode is active. Click the CLI you want to update. Gemini flavor cards reuse the saved profile for that flavor when one exists."
+                        : "Start a fresh iTerm2 session from a ready-made launcher template. Gemini flavor cards reuse the saved profile for that flavor when one exists."
+                )
                     .foregroundStyle(.secondary)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 12)], spacing: 12) {
                     ForEach(LaunchTemplateCatalog.quickLaunchTemplates) { template in
+                        let canTrigger = !isUpdateMode || canUpdateQuickLaunch(template)
                         Button {
-                            launchQuick(template)
+                            if isUpdateMode {
+                                updateQuick(template)
+                            } else {
+                                launchQuick(template)
+                            }
                         } label: {
                             VStack(alignment: .leading, spacing: 10) {
-                                Label(template.title, systemImage: template.systemImage)
+                                Label(
+                                    template.title,
+                                    systemImage: isUpdateMode ? "arrow.triangle.2.circlepath" : template.systemImage
+                                )
                                     .font(.headline)
-                                Text(template.agentKind.summary)
+                                Text(
+                                    isUpdateMode
+                                        ? (canUpdateQuickLaunch(template) ? "Run update command" : "Update unavailable")
+                                        : template.agentKind.summary
+                                )
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
                             .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                            .opacity(canTrigger ? 1 : 0.45)
                         }
                         .buttonStyle(.plain)
+                        .disabled(!canTrigger)
                     }
                 }
             }
@@ -3353,7 +4437,10 @@ private struct LaunchCenterPane: View {
 
 private struct DiagnosticsTabPane: View {
     @ObservedObject var preview: LaunchPreviewStore
-    let logger: LaunchLogger
+    let updateTerminalDisplayName: String
+    let launchUpdateInTerminal: (ToolStatus) -> Void
+    let copyUpdateCommand: (ToolStatus) -> Void
+    let openInstallDocumentation: (ToolStatus) -> Void
     
     var body: some View {
         ScrollView {
@@ -3382,8 +4469,43 @@ private struct DiagnosticsTabPane: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
-                                if let update = status.updateCommand {
-                                    UpdateButton(name: status.name, command: update, logger: logger)
+                                if let updateCommand = status.updateCommand {
+                                    HStack(alignment: .center, spacing: 8) {
+                                        Button {
+                                            launchUpdateInTerminal(status)
+                                        } label: {
+                                            Label("Update in \(updateTerminalDisplayName)", systemImage: "terminal")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .help("Open the update command for \(status.name) in \(updateTerminalDisplayName).")
+
+                                        Button {
+                                            copyUpdateCommand(status)
+                                        } label: {
+                                            Label("Copy command", systemImage: "doc.on.doc")
+                                        }
+                                        .buttonStyle(.bordered)
+
+                                        if status.installDocumentation != nil {
+                                            Button {
+                                                openInstallDocumentation(status)
+                                            } label: {
+                                                Label("Docs", systemImage: "book")
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+
+                                        if let riskLevel = status.providerRiskLevel {
+                                            Text(riskLevel.displayName)
+                                                .font(.caption.weight(.semibold))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(riskBackground(for: riskLevel), in: Capsule())
+                                        }
+                                    }
+                                    Text("Update command: \(updateCommand)")
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
                                 }
                                 Text(status.detail)
                                     .foregroundStyle(.secondary)
@@ -3435,6 +4557,17 @@ private struct DiagnosticsTabPane: View {
                     .equatable()
             }
             .padding()
+        }
+    }
+
+    private func riskBackground(for riskLevel: ProviderRiskLevel) -> Color {
+        switch riskLevel {
+        case .low:
+            return .green.opacity(0.16)
+        case .medium:
+            return .orange.opacity(0.18)
+        case .high:
+            return .red.opacity(0.18)
         }
     }
 }

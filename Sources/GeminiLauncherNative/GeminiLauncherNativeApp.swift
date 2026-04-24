@@ -1,14 +1,50 @@
+import AppKit
 import SwiftUI
+
+@MainActor
+final class CLILauncherAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        scheduleActivationAttempts()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        scheduleActivationAttempts()
+        return true
+    }
+
+    private func scheduleActivationAttempts() {
+        for delay in [0.0, 0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                self.activatePrimaryWindow()
+            }
+        }
+    }
+
+    private func activatePrimaryWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let window = NSApp.windows.first(where: \.isVisible) ?? NSApp.windows.first {
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+}
 
 @main
 struct CLILauncherNativeApp: App {
+    @NSApplicationDelegateAdaptor(CLILauncherAppDelegate.self) private var appDelegate
     @StateObject private var store = ProfileStore()
     @StateObject private var logger = LaunchLogger()
     @StateObject private var terminalMonitor = TerminalMonitorStore()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(
+                logger: logger,
+                terminalMonitor: terminalMonitor
+            )
                 .environmentObject(store)
                 .environmentObject(logger)
                 .environmentObject(terminalMonitor)
@@ -25,6 +61,7 @@ struct CLILauncherNativeApp: App {
                     NotificationCenter.default.post(name: .relaunchLastRequested, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(store.relaunchLastTarget() == nil)
 
                 Button("Toggle Automation") {
                     NotificationCenter.default.post(name: .toggleAutomationRequested, object: nil)
