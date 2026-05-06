@@ -238,7 +238,7 @@ enum LauncherTab: String, CaseIterable, Identifiable {
         case .history: return "History"
         case .diagnostics: return "Diagnostics"
         case .monitoring: return "Monitoring"
-        case .keystrokes: return "Keystrokes"
+        case .keystrokes: return "Docs"
         case .logs: return "Launch Log"
         case .settings: return "Settings"
         }

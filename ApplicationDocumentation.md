@@ -135,6 +135,18 @@ Legacy state folders are migrated automatically when found:
   - Toggle automation using keystrokes:
     - App shortcut: **Cmd+Shift+A** (selected Gemini profile).
     - Runner shortcut: **Ctrl-G a** (or your configured hotkey prefix + `a`).
+    - Runner enable shortcut: **Ctrl-G o** (or your configured hotkey prefix + `o`) enables automation for the running terminal and arms continuous supporting prompts.
+    - Runner status shortcut: **Ctrl-G i** prints whether automation is currently enabled in the running terminal.
+    - Runner recheck shortcut: **Ctrl-G e** asks the runner to inspect the visible Gemini prompt again.
+  - Fire & Forget uses configurable supporting and recovery prompts. The supporting prompt defaults to `continue`; the recovery prompt defaults to `continue to next refactor` and is used after Gemini repeats conclusion or idle-state keywords more than once.
+  - Launch Center retains the Fire & Forget prompt, supporting prompt, and recovery prompt after you click the Launch Prompt **Save** button. Prompt typing stays local and does not auto-save on every keystroke.
+  - Manual typing cancels pending automated keystrokes but does not disable automation. If the prompt field already contains manual text, the runner will not inject the supporting prompt into it.
+  - To re-enable Fire & Forget supporting prompts in an already-running Gemini terminal:
+    1. Press the runner prefix, then `o` before the timeout. With the default prefix this is **Ctrl-G**, then **o**. This enables automation and arms the supporting prompt loop.
+    2. Press the runner prefix, then `i` to confirm the terminal reports automation as enabled.
+    3. If Gemini is idle and no supporting prompt is sent, press the runner prefix, then `e` to re-check the visible prompt.
+    4. Make sure the Gemini input field is empty. The runner will not append `continue` or another supporting prompt into text you typed manually.
+  - If **Ctrl-G** opens Vim, a shell widget, or another console instead of showing the runner prefix message, that terminal is not receiving `Ctrl-G` as the runner hotkey. Change the Gemini profile **Hotkey prefix** to `ctrl-]`, `ctrl-t`, or `ctrl-\`, click the Launch Prompt **Save** button or save the launcher state, and relaunch the Gemini session. The app-level **Cmd+Shift+O** shortcut enables automation for the selected profile and future launches; it does not inject a hotkey command into an already-running terminal.
   - Ensure working directory is expected by the selected launch mode.
 - **Preflight warnings but launch still succeeds**
   - Warnings can be informational; use error-state blocks for required blockers.
@@ -152,13 +164,13 @@ Legacy state folders are migrated automatically when found:
 - Product: `CLILauncherNative`
 - Swift package: `Package.swift`
 
-### Useful files
+### Source layout
 
-- `Sources/GeminiLauncherNative/LauncherServices.swift` — command construction and launch infrastructure
-- `Sources/GeminiLauncherNative/Models.swift` — provider definitions and data models
-- `Sources/GeminiLauncherNative/ProfileStore.swift` — persistence, defaults, migrations
-- `Sources/GeminiLauncherNative/ContentView.swift` — tabs, launch UX, diagnostics views
-- `Sources/GeminiLauncherNative/MonitoringDashboardView.swift` — runtime/session monitoring
+- `Sources/GeminiLauncherNative/App/` — application entry point and primary SwiftUI shell.
+- `Sources/GeminiLauncherNative/Models/` — provider definitions, settings, launch profiles, diagnostics, and monitoring data models.
+- `Sources/GeminiLauncherNative/Services/` — command construction, launch planning, profile persistence, preflight checks, terminal integration, and tool discovery/update services.
+- `Sources/GeminiLauncherNative/Monitoring/` — terminal session monitoring, Mongo persistence, diagnostics, and monitoring dashboard views.
+- `Sources/GeminiLauncherNative/Resources/` — bundled runtime resources, including the Gemini automation runner.
 
 ### Contributing guidance
 

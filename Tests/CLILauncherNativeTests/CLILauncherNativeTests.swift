@@ -215,6 +215,17 @@ final class TerminalMonitorPromptTests: XCTestCase {
         )
     }
 
+    func testExtractGeminiSessionStatsBlockedReasonParsesUnavailableRunnerBanner() {
+        let transcript = """
+        [gemini-preview-pty] Startup session stats: unavailable (startup /stats output was not detected in time) — continuing startup telemetry.
+        [gemini-preview-pty] Auto-sending initial prompt (visible prompt field)...
+        """
+
+        let reason = TerminalMonitorStore.extractGeminiSessionStatsBlockedReason(fromTranscriptText: transcript)
+
+        XCTAssertEqual(reason, "startup /stats output was not detected in time")
+    }
+
     func testExtractGeminiCompatibilityOverrideReasonParsesRunnerBanner() {
         let transcript = """
         [gemini-preview-pty] Gemini CLI version: 0.32.1
@@ -242,11 +253,20 @@ final class TerminalMonitorPromptTests: XCTestCase {
         )
     }
 
+    func testExtractGeminiAccountChangeDetectedParsesRunnerBanner() {
+        let transcript = """
+        [gemini-preview-pty] Account change detected: authentication succeeded; restarting Gemini CLI without startup /clear.
+        [gemini-preview-pty] Account change telemetry: running /stats -> /model without startup /clear.
+        """
+
+        XCTAssertTrue(TerminalMonitorStore.extractGeminiAccountChangeDetected(fromTranscriptText: transcript))
+    }
+
     func testExtractGeminiLaunchContextParsesRunnerBanner() {
         let transcript = """
         [gemini-preview-pty] Gemini CLI version: 0.32.1
         [gemini-preview-pty] Runner path: /Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs
-        [gemini-preview-pty] Runner build: 20260424T154225Z
+        [gemini-preview-pty] Runner build: 20260425T192100Z
         [gemini-preview-pty] Wrapper resolved: /Users/michalmatynia/.local/gemini-preview/bin/gemini
         [gemini-preview-pty] Wrapper kind: binary
         [gemini-preview-pty] Launch mode: direct
@@ -259,7 +279,7 @@ final class TerminalMonitorPromptTests: XCTestCase {
 
         XCTAssertEqual(snapshot?.cliVersion, "0.32.1")
         XCTAssertEqual(snapshot?.runnerPath, "/Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs")
-        XCTAssertEqual(snapshot?.runnerBuild, "20260424T154225Z")
+        XCTAssertEqual(snapshot?.runnerBuild, "20260425T192100Z")
         XCTAssertEqual(snapshot?.wrapperResolvedPath, "/Users/michalmatynia/.local/gemini-preview/bin/gemini")
         XCTAssertEqual(snapshot?.wrapperKind, "binary")
         XCTAssertEqual(snapshot?.launchMode, "direct")
@@ -536,7 +556,7 @@ final class TerminalMonitorPromptTests: XCTestCase {
             agentKind: .gemini,
             providerCLIVersion: "0.32.1",
             providerRunnerPath: "/Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs",
-            providerRunnerBuild: "20260424T154225Z",
+            providerRunnerBuild: "20260425T192100Z",
             providerWrapperResolvedPath: "/Users/michalmatynia/.local/gemini-preview/bin/gemini",
             providerWrapperKind: "binary",
             providerLaunchMode: "direct",
@@ -564,7 +584,7 @@ final class TerminalMonitorPromptTests: XCTestCase {
 
         XCTAssertEqual(updated.providerCLIVersion, "0.32.1")
         XCTAssertEqual(updated.providerRunnerPath, "/Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs")
-        XCTAssertEqual(updated.providerRunnerBuild, "20260424T154225Z")
+        XCTAssertEqual(updated.providerRunnerBuild, "20260425T192100Z")
         XCTAssertEqual(updated.providerWrapperResolvedPath, "/Users/michalmatynia/.local/gemini-preview/bin/gemini")
         XCTAssertEqual(updated.providerWrapperKind, "binary")
         XCTAssertEqual(updated.providerLaunchMode, "direct")
@@ -2311,7 +2331,7 @@ final class MongoMonitoringWriterScriptTests: XCTestCase {
             provider_tier: "Gemini Code Assist for individuals",
             provider_cli_version: "0.32.1",
             provider_runner_path: "/Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs",
-            provider_runner_build: "20260424T154225Z",
+            provider_runner_build: "20260425T192100Z",
             provider_wrapper_resolved_path: "/Users/michalmatynia/.local/gemini-preview/bin/gemini",
             provider_wrapper_kind: "binary",
             provider_launch_mode: "direct",
@@ -2399,7 +2419,7 @@ final class MongoMonitoringWriterScriptTests: XCTestCase {
 
         XCTAssertEqual(session.providerCLIVersion, "0.32.1")
         XCTAssertEqual(session.providerRunnerPath, "/Applications/CLILauncher.app/Contents/Resources/gemini-automation-runner.mjs")
-        XCTAssertEqual(session.providerRunnerBuild, "20260424T154225Z")
+        XCTAssertEqual(session.providerRunnerBuild, "20260425T192100Z")
         XCTAssertEqual(session.providerWrapperResolvedPath, "/Users/michalmatynia/.local/gemini-preview/bin/gemini")
         XCTAssertEqual(session.providerWrapperKind, "binary")
         XCTAssertEqual(session.providerLaunchMode, "direct")
@@ -2773,7 +2793,7 @@ final class TerminalSessionEventParsingTests: XCTestCase {
         session.mongoInputSyncState = .streaming
         session.mongoInputSyncSource = "live_input_capture"
         session.providerRunnerPath = "/tmp/custom-runner.mjs"
-        session.providerRunnerBuild = "20260424T154225Z"
+        session.providerRunnerBuild = "20260426T090000Z"
         session.providerModelUsage = [
             GeminiSessionStatsModelUsageRow(
                 model: "gemini-2.5-pro",
@@ -2816,17 +2836,17 @@ final class TerminalSessionEventParsingTests: XCTestCase {
     func testMonitoringDashboardGeminiRunnerBuildStatusTextReportsMatchAndMismatch() {
         XCTAssertEqual(
             MonitoringDashboardView.geminiRunnerBuildStatusText(
-                sessionRunnerBuild: "20260424T154225Z",
-                bundledRunnerBuild: "20260424T154225Z"
+                sessionRunnerBuild: "20260425T192100Z",
+                bundledRunnerBuild: "20260425T192100Z"
             ),
             "Matches bundled app runner"
         )
         XCTAssertEqual(
             MonitoringDashboardView.geminiRunnerBuildStatusText(
                 sessionRunnerBuild: "20260423T000000Z",
-                bundledRunnerBuild: "20260424T154225Z"
+                bundledRunnerBuild: "20260425T192100Z"
             ),
-            "Differs from bundled app runner (20260424T154225Z)"
+            "Differs from bundled app runner (20260425T192100Z)"
         )
     }
 
@@ -3364,6 +3384,9 @@ final class ProfileStorePersistenceTests: XCTestCase {
         settings.defaultNodeExecutable = "/usr/local/bin/node"
         settings.defaultHotkeyPrefix = "ctrl-t"
         settings.confirmBeforeLaunch = false
+        settings.launchCenterFireAndForgetPrompt = "lint features and fix"
+        settings.launchCenterFireAndForgetSupportingPrompt = "continue refactor"
+        settings.launchCenterFireAndForgetRecoveryPrompt = "continue to next refactor"
         settings.mongoMonitoring.enabled = true
         settings.observability.persistLogsToDisk = false
         store.settings = settings
@@ -3377,8 +3400,50 @@ final class ProfileStorePersistenceTests: XCTestCase {
         XCTAssertEqual(persisted.settings.defaultNodeExecutable, "/usr/local/bin/node")
         XCTAssertEqual(persisted.settings.defaultHotkeyPrefix, "ctrl-t")
         XCTAssertFalse(persisted.settings.confirmBeforeLaunch)
+        XCTAssertEqual(persisted.settings.launchCenterFireAndForgetPrompt, "lint features and fix")
+        XCTAssertEqual(persisted.settings.launchCenterFireAndForgetSupportingPrompt, "continue refactor")
+        XCTAssertEqual(persisted.settings.launchCenterFireAndForgetRecoveryPrompt, "continue to next refactor")
         XCTAssertTrue(persisted.settings.mongoMonitoring.enabled)
         XCTAssertFalse(persisted.settings.observability.persistLogsToDisk)
+    }
+
+    func testStateChangesDoNotPersistBeforeExplicitSave() throws {
+        let store = ProfileStore(persistenceMode: .fileOnly)
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let stateURL = tempDirectory.appendingPathComponent("state.json")
+        store.setStateURLForTesting(stateURL)
+
+        var settings = store.settings
+        settings.launchCenterFireAndForgetPrompt = "draft prompt"
+        store.settings = settings
+        store.recordLaunch(
+            profile: LaunchProfile(),
+            plan: PlannedLaunch(
+                items: [
+                    PlannedLaunchItem(
+                        profileID: UUID(),
+                        profileName: "Gemini",
+                        command: "gemini",
+                        openMode: .newTab,
+                        terminalApp: .iterm2,
+                        iTermProfile: "Default",
+                        description: "Gemini"
+                    )
+                ]
+            )
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+
+        store.save()
+
+        let data = try Data(contentsOf: stateURL)
+        let persisted = try JSONDecoder.pretty.decode(PersistedState.self, from: data)
+        XCTAssertEqual(persisted.settings.launchCenterFireAndForgetPrompt, "draft prompt")
+        XCTAssertEqual(persisted.history.first?.command, "gemini")
     }
 
     func testApplySettingsPersistsPresetCleanupWithProfileMutations() throws {
@@ -3518,6 +3583,83 @@ final class ContentViewLaunchPromptTests: XCTestCase {
         XCTAssertEqual(resolved, "Explain the failure")
     }
 
+    func testResolvedGeminiSupportingPromptUsesLaunchCenterOverrideOrDefault() {
+        XCTAssertEqual(
+            ContentView.resolvedGeminiSupportingPrompt(
+                launchCenterPrompt: "  continue refactor  ",
+                profilePrompt: "continue"
+            ),
+            "continue refactor"
+        )
+        XCTAssertEqual(
+            ContentView.resolvedGeminiSupportingPrompt(
+                launchCenterPrompt: "   ",
+                profilePrompt: "   "
+            ),
+            "continue"
+        )
+    }
+
+    func testLaunchCenterPromptDisplayTextPrefersPersistedPromptOverProfilePrompt() {
+        var settings = AppSettings()
+        settings.launchCenterFireAndForgetPrompt = "lint features and fix"
+
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiInitialPrompt = "profile prompt"
+
+        XCTAssertEqual(
+            ContentView.launchCenterPromptDisplayText(settings: settings, profile: profile),
+            "lint features and fix"
+        )
+
+        settings.launchCenterFireAndForgetPrompt = "   "
+        XCTAssertEqual(
+            ContentView.launchCenterPromptDisplayText(settings: settings, profile: profile),
+            "profile prompt"
+        )
+    }
+
+    func testLaunchCenterSupportingPromptDisplayTextPrefersPersistedPromptOverProfilePrompt() {
+        var settings = AppSettings()
+        settings.launchCenterFireAndForgetSupportingPrompt = "continue refactor"
+
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiSupportingPrompt = "continue"
+
+        XCTAssertEqual(
+            ContentView.launchCenterSupportingPromptDisplayText(settings: settings, profile: profile),
+            "continue refactor"
+        )
+
+        settings.launchCenterFireAndForgetSupportingPrompt = "   "
+        XCTAssertEqual(
+            ContentView.launchCenterSupportingPromptDisplayText(settings: settings, profile: profile),
+            "continue"
+        )
+    }
+
+    func testLaunchCenterRecoveryPromptDisplayTextPrefersPersistedPromptOverProfilePrompt() {
+        var settings = AppSettings()
+        settings.launchCenterFireAndForgetRecoveryPrompt = "continue to next domain"
+
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiRecoveryPrompt = "continue to next refactor"
+
+        XCTAssertEqual(
+            ContentView.launchCenterRecoveryPromptDisplayText(settings: settings, profile: profile),
+            "continue to next domain"
+        )
+
+        settings.launchCenterFireAndForgetRecoveryPrompt = "   "
+        XCTAssertEqual(
+            ContentView.launchCenterRecoveryPromptDisplayText(settings: settings, profile: profile),
+            "continue to next refactor"
+        )
+    }
+
     func testLaunchPromptDisplayTextUsesStoredGeminiInitialPromptOnlyForGeminiProfiles() {
         var geminiProfile = LaunchProfile()
         geminiProfile.agentKind = .gemini
@@ -3529,6 +3671,222 @@ final class ContentViewLaunchPromptTests: XCTestCase {
         XCTAssertEqual(ContentView.launchPromptDisplayText(for: geminiProfile), "Keep this prompt")
         XCTAssertEqual(ContentView.launchPromptDisplayText(for: codexProfile), "")
         XCTAssertEqual(ContentView.launchPromptDisplayText(for: nil), "")
+    }
+
+    func testSupportingPromptDisplayTextUsesStoredGeminiPromptOnlyForGeminiProfiles() {
+        var geminiProfile = LaunchProfile()
+        geminiProfile.agentKind = .gemini
+        geminiProfile.geminiSupportingPrompt = "  continue refactor  "
+
+        var codexProfile = LaunchProfile()
+        codexProfile.agentKind = .codex
+
+        XCTAssertEqual(ContentView.supportingPromptDisplayText(for: geminiProfile), "continue refactor")
+        XCTAssertEqual(ContentView.supportingPromptDisplayText(for: codexProfile), "")
+        XCTAssertEqual(ContentView.supportingPromptDisplayText(for: nil), "")
+    }
+
+    func testRecoveryPromptDisplayTextUsesStoredGeminiPromptOnlyForGeminiProfiles() {
+        var geminiProfile = LaunchProfile()
+        geminiProfile.agentKind = .gemini
+        geminiProfile.geminiRecoveryPrompt = "  continue to next refactor  "
+
+        var codexProfile = LaunchProfile()
+        codexProfile.agentKind = .codex
+
+        XCTAssertEqual(ContentView.recoveryPromptDisplayText(for: geminiProfile), "continue to next refactor")
+        XCTAssertEqual(ContentView.recoveryPromptDisplayText(for: codexProfile), "")
+        XCTAssertEqual(ContentView.recoveryPromptDisplayText(for: nil), "")
+    }
+
+    func testResolvedGeminiRecoveryPromptUsesLaunchCenterOverrideOrDefault() {
+        XCTAssertEqual(
+            ContentView.resolvedGeminiRecoveryPrompt(
+                launchCenterPrompt: "  continue to next domain  ",
+                profilePrompt: "continue to next refactor"
+            ),
+            "continue to next domain"
+        )
+        XCTAssertEqual(
+            ContentView.resolvedGeminiRecoveryPrompt(
+                launchCenterPrompt: "   ",
+                profilePrompt: "   "
+            ),
+            "continue to next refactor"
+        )
+    }
+
+    func testQuickLaunchFavoriteProfilesOnlyReturnsFavorites() {
+        var favoriteGemini = LaunchProfile()
+        favoriteGemini.name = "Gemini Favorite"
+        favoriteGemini.isFavorite = true
+
+        var regularCodex = LaunchProfile()
+        regularCodex.name = "Codex Regular"
+        regularCodex.agentKind = .codex
+        regularCodex.isFavorite = false
+
+        var favoriteAider = LaunchProfile()
+        favoriteAider.name = "Aider Favorite"
+        favoriteAider.agentKind = .aider
+        favoriteAider.isFavorite = true
+
+        let favorites = ContentView.quickLaunchFavoriteProfiles(from: [
+            favoriteGemini,
+            regularCodex,
+            favoriteAider
+        ])
+
+        XCTAssertEqual(favorites.map(\.id), [favoriteGemini.id, favoriteAider.id])
+    }
+
+    func testQuickLaunchModelDisplayTextUsesProfileModel() {
+        var geminiProfile = LaunchProfile()
+        geminiProfile.agentKind = .gemini
+        geminiProfile.geminiModelMode = .fixed
+        geminiProfile.geminiInitialModel = "  gemini-3-flash-preview  "
+
+        var aiderProfile = LaunchProfile()
+        aiderProfile.agentKind = .aider
+        aiderProfile.aiderModel = "openrouter/anthropic/claude-sonnet-4.5"
+
+        XCTAssertEqual(ContentView.quickLaunchModelDisplayText(for: geminiProfile), "gemini-3-flash-preview")
+        XCTAssertEqual(ContentView.quickLaunchModelDisplayText(for: aiderProfile), "openrouter/anthropic/claude-sonnet-4.5")
+    }
+
+    func testQuickLaunchModelDisplayTextShowsAutoForGeminiAutoMode() {
+        var geminiProfile = LaunchProfile()
+        geminiProfile.agentKind = .gemini
+        geminiProfile.geminiModelMode = .auto
+        geminiProfile.geminiInitialModel = "gemini-3-pro-preview"
+
+        XCTAssertEqual(ContentView.quickLaunchModelDisplayText(for: geminiProfile), "Auto model")
+    }
+
+    func testQuickLaunchModelDisplayTextFallsBackForBlankModel() {
+        var codexProfile = LaunchProfile()
+        codexProfile.agentKind = .codex
+        codexProfile.codexModel = "   "
+
+        XCTAssertEqual(ContentView.quickLaunchModelDisplayText(for: codexProfile), "Default model")
+    }
+
+    func testResolvedQuickLaunchFavoriteProfileUsesSelectedWorkspaceForGenericGeminiFavorite() {
+        var selectedProfile = LaunchProfile()
+        selectedProfile.name = "Gemini"
+        selectedProfile.agentKind = .gemini
+        selectedProfile.geminiFlavor = .stable
+        selectedProfile.workingDirectory = "/tmp/geminitestapp"
+        selectedProfile.geminiModelMode = .auto
+
+        var previewFavorite = LaunchProfile()
+        previewFavorite.name = GeminiFlavor.preview.displayName
+        previewFavorite.agentKind = .gemini
+        previewFavorite.geminiFlavor = .preview
+        previewFavorite.workingDirectory = "/tmp/clilauncher"
+        previewFavorite.geminiModelMode = .fixed
+
+        let resolved = ContentView.resolvedQuickLaunchFavoriteProfile(
+            favoriteProfile: previewFavorite,
+            selectedProfile: selectedProfile
+        )
+
+        XCTAssertEqual(resolved.id, previewFavorite.id)
+        XCTAssertEqual(resolved.geminiFlavor, .preview)
+        XCTAssertEqual(resolved.workingDirectory, "/tmp/geminitestapp")
+        XCTAssertEqual(resolved.geminiModelMode, .auto)
+    }
+
+    func testResolvedQuickLaunchFavoriteProfileUsesSelectedWorkspaceForCustomGeminiFavorite() {
+        var selectedProfile = LaunchProfile()
+        selectedProfile.name = "Gemini"
+        selectedProfile.agentKind = .gemini
+        selectedProfile.geminiFlavor = .stable
+        selectedProfile.workingDirectory = "/tmp/geminitestapp"
+        selectedProfile.geminiModelMode = .fixed
+
+        var previewFavorite = LaunchProfile()
+        previewFavorite.name = "Preview Review Workspace"
+        previewFavorite.agentKind = .gemini
+        previewFavorite.geminiFlavor = .preview
+        previewFavorite.workingDirectory = "/tmp/review-workspace"
+        previewFavorite.geminiModelMode = .auto
+
+        let resolved = ContentView.resolvedQuickLaunchFavoriteProfile(
+            favoriteProfile: previewFavorite,
+            selectedProfile: selectedProfile
+        )
+
+        XCTAssertEqual(resolved.workingDirectory, "/tmp/geminitestapp")
+        XCTAssertEqual(resolved.geminiModelMode, .fixed)
+    }
+
+    func testResolvedQuickLaunchFavoriteProfileKeepsFavoriteModelModeWhenSelectedProfileIsNotGemini() {
+        var selectedProfile = LaunchProfile()
+        selectedProfile.name = "Codex"
+        selectedProfile.agentKind = .codex
+        selectedProfile.workingDirectory = "/tmp/current-app"
+
+        var previewFavorite = LaunchProfile()
+        previewFavorite.name = GeminiFlavor.preview.displayName
+        previewFavorite.agentKind = .gemini
+        previewFavorite.geminiFlavor = .preview
+        previewFavorite.workingDirectory = "/tmp/stale-app"
+        previewFavorite.geminiModelMode = .auto
+
+        let resolved = ContentView.resolvedQuickLaunchFavoriteProfile(
+            favoriteProfile: previewFavorite,
+            selectedProfile: selectedProfile
+        )
+
+        XCTAssertEqual(resolved.workingDirectory, "/tmp/current-app")
+        XCTAssertEqual(resolved.geminiModelMode, .auto)
+    }
+
+    func testProfileDirtyComparisonIgnoresNormalizationOnlyDifferences() {
+        var settings = AppSettings()
+        var environmentPreset = EnvironmentPreset()
+        environmentPreset.name = "Shared Env"
+        settings.environmentPresets = [environmentPreset]
+
+        var selectedProfile = LaunchProfile()
+        selectedProfile.agentKind = .gemini
+        selectedProfile.name = GeminiFlavor.preview.displayName
+        selectedProfile.geminiAutomationRunnerPath = BundledGeminiAutomationRunner.defaultPath
+        selectedProfile.environmentPresetID = environmentPreset.id
+
+        var draft = selectedProfile
+        draft.geminiAutomationRunnerPath = " "
+        draft.companionProfileIDs = [draft.id, UUID(), draft.id]
+        draft.bootstrapPresetID = UUID()
+
+        XCTAssertTrue(
+            ContentView.profilesMatchForEditorDirtyState(
+                draft,
+                selectedProfile,
+                settings: settings,
+                allProfiles: [selectedProfile]
+            )
+        )
+    }
+
+    func testProfileDirtyComparisonKeepsRealEditsDirty() {
+        let settings = AppSettings()
+        var selectedProfile = LaunchProfile()
+        selectedProfile.agentKind = .gemini
+        selectedProfile.geminiInitialModel = "gemini-3-flash-preview"
+
+        var draft = selectedProfile
+        draft.geminiInitialModel = "gemini-2.5-flash"
+
+        XCTAssertFalse(
+            ContentView.profilesMatchForEditorDirtyState(
+                draft,
+                selectedProfile,
+                settings: settings,
+                allProfiles: [selectedProfile]
+            )
+        )
     }
 
     func testResolvedQuickLaunchProfileKeepsSelectedGeminiProfileSettingsForMatchingFlavor() {
@@ -3685,7 +4043,7 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertTrue(result.contains("--light-mode"))
     }
 
-    func testGeminiEnvironmentPrioritizesInitialModelInModelChain() {
+    func testGeminiEnvironmentStartsModelChainAtInitialModel() {
         let builder = CommandBuilder()
         var profile = LaunchProfile()
         profile.agentKind = .gemini
@@ -3696,7 +4054,7 @@ final class AiderCommandBuilderTests: XCTestCase {
 
         XCTAssertEqual(
             environment["MODEL_CHAIN"],
-            "gemini-1.5-flash,gemini-2.5-pro,gemini-flash"
+            "gemini-1.5-flash,gemini-flash"
         )
     }
 
@@ -3709,6 +4067,85 @@ final class AiderCommandBuilderTests: XCTestCase {
         let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
 
         XCTAssertEqual(environment["GEMINI_INITIAL_PROMPT"], "Explain the architecture first.")
+    }
+
+    func testGeminiEnvironmentIncludesSupportingPromptOverride() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiSupportingPrompt = "  continue refactor  "
+        profile.geminiRecoveryPrompt = "  continue to next refactor  "
+
+        var environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+        XCTAssertEqual(environment["CONTINUE_COMMAND"], "continue refactor")
+        XCTAssertEqual(environment["CONTINUE_FALLBACK_COMMAND"], "continue to next refactor")
+
+        profile.geminiSupportingPrompt = "   "
+        profile.geminiRecoveryPrompt = "   "
+        environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+        XCTAssertEqual(environment["CONTINUE_COMMAND"], "continue")
+        XCTAssertEqual(environment["CONTINUE_FALLBACK_COMMAND"], "continue to next refactor")
+    }
+
+    func testGeminiEnvironmentIncludesModelChainExhaustedAction() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiModelChainExhaustedAction = .keepOpen
+
+        let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+        XCTAssertEqual(environment["MODEL_CHAIN_EXHAUSTED_ACTION"], "keep_open")
+    }
+
+    func testGeminiEnvironmentMarksAutoModelModeForRunner() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiModelMode = .auto
+
+        let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+        XCTAssertEqual(environment["GEMINI_MODEL_AUTO"], "1")
+        XCTAssertEqual(environment["GEMINI_AUTO_MODEL"], "auto")
+    }
+
+    func testGeminiEnvironmentMarksFixedModelModeForRunner() {
+        let builder = CommandBuilder()
+        var profile = LaunchProfile()
+        profile.agentKind = .gemini
+        profile.geminiModelMode = .fixed
+
+        let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+        XCTAssertEqual(environment["GEMINI_MODEL_AUTO"], "0")
+    }
+
+    func testGeminiFixedModelModeRetainsFallbackChainForEveryFlavor() {
+        let builder = CommandBuilder()
+
+        for flavor in GeminiFlavor.allCases {
+            var profile = LaunchProfile()
+            profile.agentKind = .gemini
+            profile.geminiFlavor = flavor
+            profile.geminiModelMode = .fixed
+            profile.geminiInitialModel = "gemini-3-flash-preview"
+            profile.geminiModelChain = "gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite"
+            profile.geminiAutoContinueMode = .promptOnly
+
+            let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
+
+            XCTAssertEqual(environment["CLI_FLAVOR"], flavor.cliFlavorValue)
+            XCTAssertEqual(environment["NEVER_SWITCH"], "1")
+            XCTAssertEqual(environment["GEMINI_MODEL_AUTO"], "0")
+            XCTAssertNil(environment["GEMINI_AUTO_MODEL"])
+            XCTAssertEqual(environment["AUTO_CONTINUE_MODE"], "prompt_only")
+            XCTAssertEqual(
+                environment["MODEL_CHAIN"],
+                "gemini-3-flash-preview,gemini-2.5-flash-lite",
+                "flavor: \(flavor.rawValue)"
+            )
+        }
     }
 
     func testGeminiEnvironmentExportsMergedLaunchPath() throws {
@@ -3801,11 +4238,17 @@ final class AiderCommandBuilderTests: XCTestCase {
         profile.geminiKeepTryMax = 1
         profile.geminiCapacityRetryMs = 5_000
 
-        profile.configureGeminiFireAndForget(prompt: "  Ship the release and keep going.  ")
+        profile.configureGeminiFireAndForget(
+            prompt: "  Ship the release and keep going.  ",
+            supportingPrompt: "  continue refactor  ",
+            recoveryPrompt: "  continue to next refactor  "
+        )
         let environment = builder.buildEnvironment(profile: profile, settings: AppSettings())
 
         XCTAssertEqual(profile.geminiLaunchMode, .automationRunner)
         XCTAssertEqual(profile.geminiInitialPrompt, "Ship the release and keep going.")
+        XCTAssertEqual(profile.geminiSupportingPrompt, "continue refactor")
+        XCTAssertEqual(profile.geminiRecoveryPrompt, "continue to next refactor")
         XCTAssertFalse(profile.geminiResumeLatest)
         XCTAssertTrue(profile.geminiAutomationEnabled)
         XCTAssertTrue(profile.geminiAutoAllowSessionPermissions)
@@ -3814,6 +4257,8 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(profile.geminiKeepTryMax, 10)
         XCTAssertEqual(profile.geminiCapacityRetryMs, 500)
         XCTAssertEqual(environment["AUTO_CONTINUE_MODE"], "always")
+        XCTAssertEqual(environment["CONTINUE_COMMAND"], "continue refactor")
+        XCTAssertEqual(environment["CONTINUE_FALLBACK_COMMAND"], "continue to next refactor")
         XCTAssertEqual(environment["GEMINI_YOLO"], "1")
     }
 
@@ -3860,16 +4305,28 @@ final class AiderCommandBuilderTests: XCTestCase {
         let promptSignature = profile.launchStateSignatureToken
         XCTAssertNotEqual(promptSignature, baseline)
 
+        profile.geminiSupportingPrompt = "continue refactor"
+        let supportingPromptSignature = profile.launchStateSignatureToken
+        XCTAssertNotEqual(supportingPromptSignature, promptSignature)
+
+        profile.geminiRecoveryPrompt = "continue to next domain"
+        let recoveryPromptSignature = profile.launchStateSignatureToken
+        XCTAssertNotEqual(recoveryPromptSignature, supportingPromptSignature)
+
         profile.geminiYolo = true
         let yoloSignature = profile.launchStateSignatureToken
-        XCTAssertNotEqual(yoloSignature, promptSignature)
+        XCTAssertNotEqual(yoloSignature, recoveryPromptSignature)
 
         profile.geminiSetHomeToIso = true
         let homeSignature = profile.launchStateSignatureToken
         XCTAssertNotEqual(homeSignature, yoloSignature)
 
         profile.geminiCapacityRetryMs += 250
-        XCTAssertNotEqual(profile.launchStateSignatureToken, homeSignature)
+        let capacitySignature = profile.launchStateSignatureToken
+        XCTAssertNotEqual(capacitySignature, homeSignature)
+
+        profile.geminiModelChainExhaustedAction = .keepOpen
+        XCTAssertNotEqual(profile.launchStateSignatureToken, capacitySignature)
     }
 
     func testLaunchStateSignatureTokenChangesForAiderFields() {
@@ -4065,6 +4522,190 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(payload["stopOptionText"] as? String, "2")
     }
 
+    func testBundledGeminiAutomationRunnerPrefersLatestCompleteUsageLimitMenu() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let sample = """
+        ╭──────────────────────────────────────────────────────────────────────────────╮
+        │                                                                              │
+        │ Usage limit reached for gemini-3-flash-preview.                              │
+        │ Access resets at 12:53 PM GMT+2.                                             │
+        │ /stats model for usage details                                               │
+        │ /model to switch models.                                                     │
+        │ /auth to switch to API key.                                                  │
+        │                                                                              │
+        │                                                                              │
+        │ ● 1. Keep trying                                                             │
+
+        ℹ Request cancelled.
+
+        ╭──────────────────────────────────────────────────────────────────────────────╮
+        │                                                                              │
+        │ Usage limit reached for gemini-3-flash-preview.                              │
+        │ Access resets at 12:53 PM GMT+2.                                             │
+        │ /stats model for usage details                                               │
+        │ /model to switch models.                                                     │
+        │ /auth to switch to API key.                                                  │
+        │                                                                              │
+        │                                                                              │
+        │   1. Keep trying                                                             │
+        │ ● 2. Stop                                                                    │
+        │                                                                              │
+        │                                                                              │
+        ╰──────────────────────────────────────────────────────────────────────────────╯
+        """
+
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedSample = String(data: try JSONEncoder().encode(sample), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const sample = \(encodedSample);
+          const snapshot = mod._test.detectSnapshotFromText(sample, "sample");
+          process.stdout.write(JSON.stringify(snapshot));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let snapshotData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshotData) as? [String: Any])
+        let selected = try XCTUnwrap(payload["selectedOption"] as? [String: Any])
+        let stop = try XCTUnwrap(payload["stopOption"] as? [String: Any])
+
+        XCTAssertEqual(payload["kind"] as? String, "usage_limit")
+        XCTAssertEqual(payload["stopOptionText"] as? String, "2")
+        XCTAssertEqual(stop["canonical"] as? String, "stop")
+        XCTAssertEqual(selected["numberText"] as? String, "2")
+        XCTAssertEqual(selected["canonical"] as? String, "stop")
+    }
+
+    func testBundledGeminiAutomationRunnerRelaunchesWhenUsageLimitBlocksPromptCommands() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = {
+            blocked: mod._test.shouldRelaunchForBlockedUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: false,
+              stopOption: null,
+            }),
+            activePromptWithoutStop: mod._test.shouldRelaunchForBlockedUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: true,
+              stopOption: null,
+            }),
+            switchActivePromptWithoutStop: mod._test.shouldSwitchImmediatelyForPromptUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: true,
+              usageLimitPromptActive: true,
+              stopOption: null,
+            }),
+            switchRetainedPromptWithoutStop: mod._test.shouldSwitchImmediatelyForPromptUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: true,
+              usageLimitPromptActive: false,
+              stopOption: null,
+            }),
+            switchBlockedWithoutPrompt: mod._test.shouldSwitchImmediatelyForPromptUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: false,
+              stopOption: null,
+            }),
+            switchDismissableMenu: mod._test.shouldSwitchImmediatelyForPromptUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: true,
+              stopOption: { numberText: '2', canonical: 'stop' },
+            }),
+            dismissableMenu: mod._test.shouldRelaunchForBlockedUsageLimit({
+              kind: 'usage_limit',
+              chatPromptActive: false,
+              stopOption: { numberText: '2', canonical: 'stop' },
+            }),
+            normal: mod._test.shouldRelaunchForBlockedUsageLimit({
+              kind: 'normal',
+              chatPromptActive: false,
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["blocked"] as? Bool, true)
+        XCTAssertEqual(payload["activePromptWithoutStop"] as? Bool, true)
+        XCTAssertEqual(payload["switchActivePromptWithoutStop"] as? Bool, true)
+        XCTAssertEqual(payload["switchRetainedPromptWithoutStop"] as? Bool, false)
+        XCTAssertEqual(payload["switchBlockedWithoutPrompt"] as? Bool, false)
+        XCTAssertEqual(payload["switchDismissableMenu"] as? Bool, false)
+        XCTAssertEqual(payload["dismissableMenu"] as? Bool, false)
+        XCTAssertEqual(payload["normal"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerAdoptsOnlyFinalizingModelSwitchTargetsForUsageLimit() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const chain = \(encodedChain);
+          const direct = mod._test.resolvePendingModelSwitchTargetForUsageLimit({
+            kind: 'model-switch-finalize',
+            targetIndex: 1,
+            targetModel: 'gemini-3-flash-preview',
+          }, chain);
+          const manage = mod._test.resolvePendingModelSwitchTargetForUsageLimit({
+            kind: 'model-manage-finalize',
+            targetIndex: 2,
+            targetModel: 'gemini-2.5-flash',
+          }, chain);
+          const route = mod._test.resolvePendingModelSwitchTargetForUsageLimit({
+            kind: 'model-manage-route',
+            targetIndex: 1,
+            targetModel: 'gemini-3-flash-preview',
+          }, chain);
+          const invalid = mod._test.resolvePendingModelSwitchTargetForUsageLimit({
+            kind: 'model-switch-finalize',
+            targetIndex: 99,
+            targetModel: 'gemini-unknown',
+          }, chain);
+          process.stdout.write(JSON.stringify({ direct, manage, route, invalid }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let direct = try XCTUnwrap(payload["direct"] as? [String: Any])
+        let manage = try XCTUnwrap(payload["manage"] as? [String: Any])
+        XCTAssertEqual(direct["targetIndex"] as? Int, 1)
+        XCTAssertEqual(direct["targetModel"] as? String, "gemini-3-flash-preview")
+        XCTAssertEqual(manage["targetIndex"] as? Int, 2)
+        XCTAssertEqual(manage["targetModel"] as? String, "gemini-2.5-flash")
+        XCTAssertTrue(payload["route"] is NSNull)
+        XCTAssertTrue(payload["invalid"] is NSNull)
+    }
+
     func testBundledGeminiAutomationRunnerDetectsBracketedPermissionPromptAsPermissionMenu() throws {
         let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
         let sample = """
@@ -4111,7 +4752,7 @@ final class AiderCommandBuilderTests: XCTestCase {
         The npm run lint command completed with 44158 issues (44156 errors, 2 warnings).
         Would you like me to proceed with attempting to fix some of these remaining issues manually, or would you prefer to move on to another task?
         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
-         > 
+         >
         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
         """
 
@@ -4304,7 +4945,7 @@ final class AiderCommandBuilderTests: XCTestCase {
 
         let result = try runNodeScript(script)
         XCTAssertEqual(result.terminationStatus, 0, result.stderr)
-        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "20260424T154225Z")
+        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "20260426T090000Z")
     }
 
     func testBundledGeminiAutomationRunnerBundleHelperMatchesRunnerModuleBuildIdentifier() throws {
@@ -4444,6 +5085,13 @@ final class AiderCommandBuilderTests: XCTestCase {
           const payload = {
             startup: mod._test.buildStartupStatsCommand(capabilities),
             modelManage: mod._test.buildModelManageStarterCommand(2, "gemini-2.5-pro", capabilities),
+            nextAfterClear: mod._test.buildNextStartupCommand({
+              capabilities,
+              startupClearCompleted: true,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+              startupStatsBlockedReason: '',
+            }),
           };
           process.stdout.write(JSON.stringify(payload));
         }).catch((error) => {
@@ -4460,12 +5108,15 @@ final class AiderCommandBuilderTests: XCTestCase {
         let modelManage = try XCTUnwrap(payload["modelManage"] as? [String: Any])
 
         XCTAssertTrue(payload["startup"] is NSNull)
+        let nextAfterClear = try XCTUnwrap(payload["nextAfterClear"] as? [String: Any])
+        XCTAssertEqual(nextAfterClear["kind"] as? String, "startup-model")
+        XCTAssertEqual(nextAfterClear["text"] as? String, "/model")
         XCTAssertEqual(modelManage["kind"] as? String, "model-manage-open")
         XCTAssertEqual(modelManage["text"] as? String, "/model manage")
         XCTAssertEqual(modelManage["targetModel"] as? String, "gemini-2.5-pro")
     }
 
-    func testBundledGeminiAutomationRunnerBlocksPromptWhenStartupStatsAreDisabled() throws {
+    func testBundledGeminiAutomationRunnerQueuesPromptWhenStartupStatsAreDisabledForPtyLaunch() throws {
         let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
         let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
         let script = """
@@ -4485,6 +5136,13 @@ final class AiderCommandBuilderTests: XCTestCase {
             allowLaunchPrompt: mod._test.shouldLaunchInitialPromptWithLaunchArgs(capabilities),
             args: mod._test.buildGeminiArgs("gemini-2.5-flash", {
               allowLaunchPrompt: mod._test.shouldLaunchInitialPromptWithLaunchArgs(capabilities),
+            }),
+            delayAfterSoftBlock: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupStatsObserved: false,
+              startupStatsBlockedReason: 'Gemini startup /stats automation is disabled for this test capability.',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: null,
             }),
           };
           process.stdout.write(JSON.stringify(payload));
@@ -4507,13 +5165,14 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(argsPayload["launchesWithInitialPrompt"] as? Bool, false)
         XCTAssertFalse(args.contains("--prompt-interactive"))
         XCTAssertFalse(args.contains("Ship beta now"))
+        XCTAssertEqual(payload["delayAfterSoftBlock"] as? Bool, false)
         XCTAssertEqual(
             payload["blockedReason"] as? String,
             "Gemini startup /stats automation is disabled for this test capability."
         )
     }
 
-    func testBundledGeminiAutomationRunnerBlocksPromptWhenPtyUnavailable() throws {
+    func testBundledGeminiAutomationRunnerUsesLaunchPromptWhenPtyUnavailable() throws {
         let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
         let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
         let script = """
@@ -4522,8 +5181,14 @@ final class AiderCommandBuilderTests: XCTestCase {
           const capabilities = {
             startupStatsAutomationSupported: true,
           };
+          const allowLaunchPrompt = mod._test.shouldLaunchInitialPromptWithLaunchArgs(capabilities, {
+            ptyAvailable: false,
+          });
           const payload = {
-            allowLaunchPrompt: mod._test.shouldLaunchInitialPromptWithLaunchArgs(capabilities),
+            allowLaunchPrompt,
+            args: mod._test.buildGeminiArgs("gemini-2.5-flash", {
+              allowLaunchPrompt,
+            }),
             blockedReason: mod._test.resolveStartupStatsBlockReason({
               hasInitialPrompt: true,
               capabilities,
@@ -4542,8 +5207,13 @@ final class AiderCommandBuilderTests: XCTestCase {
 
         let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let argsPayload = try XCTUnwrap(payload["args"] as? [String: Any])
+        let args = try XCTUnwrap(argsPayload["args"] as? [String])
 
-        XCTAssertEqual(payload["allowLaunchPrompt"] as? Bool, false)
+        XCTAssertEqual(payload["allowLaunchPrompt"] as? Bool, true)
+        XCTAssertEqual(argsPayload["launchesWithInitialPrompt"] as? Bool, true)
+        XCTAssertTrue(args.contains("--prompt-interactive"))
+        XCTAssertTrue(args.contains("Ship beta now"))
         XCTAssertEqual(
             payload["blockedReason"] as? String,
             "PTY backend unavailable, so /clear -> /stats -> /model cannot be automated before prompt injection"
@@ -4594,6 +5264,1815 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(startupModel["kind"] as? String, "startup-model")
         XCTAssertEqual(startupModel["text"] as? String, "/model")
         XCTAssertEqual(pipeline["kind"] as? String, "startup-clear")
+    }
+
+    func testBundledGeminiAutomationRunnerUsesExplicitAutoModelFlagWhenGeminiModelAutoIsEnabled() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        process.env.GEMINI_MODEL_AUTO = "1";
+        process.env.MODEL_CHAIN = "gemini-3-pro-preview,gemini-3-flash-preview";
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = mod._test.buildGeminiArgs("gemini-3-pro-preview");
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let args = try XCTUnwrap(payload["args"] as? [String])
+
+        XCTAssertEqual(Array(args.prefix(2)), ["--model", "auto"])
+        XCTAssertFalse(args.contains("gemini-3-pro-preview"))
+    }
+
+    func testBundledGeminiAutomationRunnerBuildsPostAuthTelemetryWithoutStartupClear() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let authRestartPrompt = """
+        ℹ Authentication succeeded
+        ╭──────────────────────────────────────────────────────────────────────────────╮
+        │ You've successfully signed in with Google. Gemini CLI needs to be restarted. │
+        │ Press R to restart, or Esc to choose a different authentication method.      │
+        ╰──────────────────────────────────────────────────────────────────────────────╯
+        """
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedPrompt = String(data: try JSONEncoder().encode(authRestartPrompt), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const prompt = \(encodedPrompt);
+          const first = mod._test.buildPostAuthTelemetryCommand();
+          const second = mod._test.buildNextStartupCommand({
+            startupClearCompleted: true,
+            startupStatsObserved: true,
+            startupModelCapacityObserved: false,
+            startupStatsBlockedReason: '',
+            startupStatsBlocksInitialPrompt: false,
+          });
+          const payload = {
+            hasAuthRestart: mod._test.hasAuthRestartRequiredPrompt(prompt),
+            snapshot: mod._test.detectSnapshotFromText(prompt, 'sample'),
+            first,
+            second,
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let snapshot = try XCTUnwrap(payload["snapshot"] as? [String: Any])
+        let first = try XCTUnwrap(payload["first"] as? [String: Any])
+        let second = try XCTUnwrap(payload["second"] as? [String: Any])
+
+        XCTAssertEqual(payload["hasAuthRestart"] as? Bool, true)
+        XCTAssertEqual(snapshot["kind"] as? String, "auth_restart_required")
+        XCTAssertEqual(first["kind"] as? String, "startup-stats")
+        XCTAssertEqual(first["text"] as? String, "/stats")
+        XCTAssertEqual(second["kind"] as? String, "startup-model")
+        XCTAssertEqual(second["text"] as? String, "/model")
+    }
+
+    func testBundledGeminiAutomationRunnerRequeuesInterruptedStartupPipeline() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const normalPrompt = { kind: 'normal', chatPromptActive: true };
+          const payload = {
+            beforeStats: mod._test.buildNextStartupCommand({
+              startupClearCompleted: false,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+            }),
+            afterClear: mod._test.buildNextStartupCommand({
+              startupClearCompleted: true,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+            }),
+            afterStats: mod._test.buildNextStartupCommand({
+              startupClearCompleted: true,
+              startupStatsObserved: true,
+              startupModelCapacityObserved: false,
+            }),
+            afterStatsUnavailable: mod._test.buildNextStartupCommand({
+              startupClearCompleted: true,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+              startupStatsBlockedReason: 'startup /stats output was not detected in time',
+              startupStatsBlocksInitialPrompt: false,
+            }),
+            afterModelUnavailable: mod._test.buildNextStartupCommand({
+              startupClearCompleted: true,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+              startupStatsBlockedReason: 'startup /model output was not detected in time',
+              startupStatsBlocksInitialPrompt: false,
+            }),
+            complete: mod._test.buildNextStartupCommand({
+              startupClearCompleted: true,
+              startupStatsObserved: true,
+              startupModelCapacityObserved: true,
+            }),
+            shouldRequeue: mod._test.shouldRequeueStartupCommand(normalPrompt, {
+              pendingPromptCommand: null,
+              sentInitialPrompt: false,
+              authWaiting: false,
+              startupStatsBlockedReason: '',
+              startupClearCompleted: false,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+            }),
+            doesNotRequeueAfterPrompt: mod._test.shouldRequeueStartupCommand(normalPrompt, {
+              pendingPromptCommand: null,
+              sentInitialPrompt: true,
+              authWaiting: false,
+              startupStatsBlockedReason: '',
+              startupClearCompleted: false,
+              startupStatsObserved: false,
+              startupModelCapacityObserved: false,
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let beforeStats = try XCTUnwrap(payload["beforeStats"] as? [String: Any])
+        let afterClear = try XCTUnwrap(payload["afterClear"] as? [String: Any])
+        let afterStats = try XCTUnwrap(payload["afterStats"] as? [String: Any])
+        let afterStatsUnavailable = try XCTUnwrap(payload["afterStatsUnavailable"] as? [String: Any])
+
+        XCTAssertEqual(beforeStats["kind"] as? String, "startup-clear")
+        XCTAssertEqual(afterClear["kind"] as? String, "startup-stats")
+        XCTAssertEqual(afterStats["kind"] as? String, "startup-model")
+        XCTAssertEqual(afterStatsUnavailable["kind"] as? String, "startup-model")
+        XCTAssertTrue(payload["afterModelUnavailable"] is NSNull)
+        XCTAssertTrue(payload["complete"] is NSNull)
+        XCTAssertEqual(payload["shouldRequeue"] as? Bool, true)
+        XCTAssertEqual(payload["doesNotRequeueAfterPrompt"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotFinalizeStartupCommandWhilePromptInputRemains() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const promptWithClear = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptInputText: '/clear',
+          };
+          const promptWithStats = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptInputText: '/stats',
+          };
+          const emptyPrompt = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptInputText: '',
+          };
+          const historicalClearEcho = [
+            '> /clear',
+            '? for shortcuts',
+            'Type your message or @path/to/file',
+            '> '
+          ].join('\\n');
+          const historicalStatsEcho = [
+            '> /stats',
+            '? for shortcuts',
+            'Type your message or @path/to/file',
+            '> '
+          ].join('\\n');
+          const payload = {
+            clearWithInput: mod._test.hasStartupClearSettled(promptWithClear, {
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 500,
+            }),
+            statsWithInput: mod._test.hasStartupStatsCaptureSettled(promptWithStats, {
+              startupStatsObserved: true,
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 500,
+            }),
+            modelWithInput: mod._test.hasStartupModelCapacityClosed(promptWithStats, {
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 500,
+            }),
+            clearWithPendingEnter: mod._test.hasStartupClearSettled(emptyPrompt, {
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 500,
+              pendingSubmitEnter: true,
+            }),
+            clearWithPendingSubmitSettle: mod._test.hasStartupClearSettled(emptyPrompt, {
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 500,
+              pendingSubmitSettling: true,
+            }),
+            clearWithoutInput: mod._test.hasStartupClearSettled(emptyPrompt, {
+              screenText: '',
+              visibleText: '',
+              waitedForMs: 1000,
+              pendingSubmitEnter: false,
+            }),
+            clearAfterHistoricalEcho: mod._test.hasStartupClearSettled(emptyPrompt, {
+              screenText: historicalClearEcho,
+              visibleText: historicalClearEcho,
+              waitedForMs: 1000,
+              pendingSubmitEnter: false,
+            }),
+            statsAfterHistoricalEcho: mod._test.hasStartupStatsCaptureSettled(emptyPrompt, {
+              startupStatsObserved: true,
+              screenText: historicalStatsEcho,
+              visibleText: historicalStatsEcho,
+              waitedForMs: 500,
+              pendingSubmitEnter: false,
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["clearWithInput"] as? Bool, false)
+        XCTAssertEqual(payload["statsWithInput"] as? Bool, false)
+        XCTAssertEqual(payload["modelWithInput"] as? Bool, false)
+        XCTAssertEqual(payload["clearWithPendingEnter"] as? Bool, false)
+	        XCTAssertEqual(payload["clearWithPendingSubmitSettle"] as? Bool, false)
+	        XCTAssertEqual(payload["clearWithoutInput"] as? Bool, true)
+	        XCTAssertEqual(payload["clearAfterHistoricalEcho"] as? Bool, true)
+	        XCTAssertEqual(payload["statsAfterHistoricalEcho"] as? Bool, true)
+	    }
+
+    func testBundledGeminiAutomationRunnerExtractsStackedStartupSlashPromptInput() throws {
+        let transcript = #"""
+        Type your message or @path/to/file
+
+         ● YOLO
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         * /stats
+           /model
+           /model
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        """#
+
+        let promptWithWorkspaceRows = #"""
+        ? for shortcuts
+        * /model
+        workspace (/directory)     branch     sandbox       /model
+        /tmp/clilauncher          main       no sandbox    gemini-3-flash-preview
+        """#
+        let stackedContinuePrompt = #"""
+        ? for shortcuts
+         > continue
+
+           continue
+
+           continue
+        """#
+        let apiUsageLimitWithStackedContinue = #"""
+        ✕ [API Error: You have exhausted your capacity on this model. Your quota will reset after 23h23m59s.]
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         > continue
+
+           continue
+
+           continue
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        """#
+
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedTranscript = String(data: try JSONEncoder().encode(transcript), encoding: .utf8) ?? "\"\""
+        let encodedPromptWithWorkspaceRows = String(data: try JSONEncoder().encode(promptWithWorkspaceRows), encoding: .utf8) ?? "\"\""
+        let encodedStackedContinuePrompt = String(data: try JSONEncoder().encode(stackedContinuePrompt), encoding: .utf8) ?? "\"\""
+        let encodedApiUsageLimitWithStackedContinue = String(data: try JSONEncoder().encode(apiUsageLimitWithStackedContinue), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const stacked = \(encodedTranscript).split('\\n');
+          const workspaceRows = \(encodedPromptWithWorkspaceRows).split('\\n');
+          const stackedContinue = \(encodedStackedContinuePrompt).split('\\n');
+          const apiUsageLimit = mod._test.detectSnapshotFromText(\(encodedApiUsageLimitWithStackedContinue), 'screen');
+          const payload = {
+            stackedPromptInput: mod._test.extractPromptInputText(stacked),
+            stackedCommands: mod._test.automationPromptInputCommandLines(mod._test.extractPromptInputText(stacked)),
+            promptInputWithoutWorkspaceRows: mod._test.extractPromptInputText(workspaceRows),
+            stackedContinuePromptInput: mod._test.extractPromptInputText(stackedContinue),
+            stackedContinueCommands: mod._test.automationPromptInputCommandLines(mod._test.extractPromptInputText(stackedContinue)),
+            apiUsageLimitKind: apiUsageLimit.kind,
+            apiUsageLimitPromptInput: apiUsageLimit.promptInputText,
+            apiUsageLimitCommands: mod._test.automationPromptInputCommandLines(apiUsageLimit.promptInputText),
+            apiUsageLimitSwitchesImmediately: mod._test.shouldSwitchImmediatelyForPromptUsageLimit(apiUsageLimit),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["stackedPromptInput"] as? String, "/stats\n/model\n/model")
+        XCTAssertEqual(payload["stackedCommands"] as? [String], ["/stats", "/model", "/model"])
+        XCTAssertEqual(payload["promptInputWithoutWorkspaceRows"] as? String, "/model")
+        XCTAssertEqual(payload["stackedContinuePromptInput"] as? String, "continue\ncontinue\ncontinue")
+        XCTAssertEqual(payload["stackedContinueCommands"] as? [String], ["continue", "continue", "continue"])
+        XCTAssertEqual(payload["apiUsageLimitKind"] as? String, "usage_limit")
+        XCTAssertEqual(payload["apiUsageLimitPromptInput"] as? String, "continue\ncontinue\ncontinue")
+        XCTAssertEqual(payload["apiUsageLimitCommands"] as? [String], ["continue", "continue", "continue"])
+        XCTAssertEqual(payload["apiUsageLimitSwitchesImmediately"] as? Bool, true)
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotAppendStartupSlashCommandsWithDelayedEnter() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let input = '';
+        let submitPending = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(command) {
+          fs.appendFileSync(logPath, command + '\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          geet       no sandbox    gemini-3-flash-preview     ...\n');
+          write('> ');
+        }
+
+        function handleCommand(command) {
+          logCommand(command);
+          if (command.includes('/clear/stats') || command.includes('/stats/model')) {
+            write('\nAppended command detected: ' + command + '\n');
+            setTimeout(() => process.exit(7), 40);
+            return;
+          }
+
+          if (command === '/clear') {
+            setTimeout(writePrompt, 120);
+          } else if (command === '/stats') {
+            write('\nSession Stats\n');
+            write('Session ID: delayed-submit-smoke\n');
+            write('Auth Method: Signed in with Google (smoke@example.com)\n');
+            write('Tier: Gemini Code Assist for individuals\n');
+            write('Model Usage\n');
+            write('gemini-3-flash-preview          1            0            0             0\n');
+            setTimeout(writePrompt, 120);
+          } else if (command === '/model') {
+            write('\nSelect Model\n');
+            write('Manual (gemini-3-flash-preview)\n');
+            write('Model usage\n');
+            write('gemini-3-flash-preview 10% Resets: 1:29 PM\n');
+            setTimeout(() => process.exit(0), 120);
+          } else if (command) {
+            write('\nUnexpected command: ' + command + '\n');
+            setTimeout(() => process.exit(8), 40);
+          }
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.39.0\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const raw = String(data || '');
+          for (const ch of raw) {
+            if (ch === '\u0015') {
+              input = '';
+              write('\n> ');
+            } else if (ch === '\r') {
+              if (submitPending) continue;
+              submitPending = true;
+              setTimeout(() => {
+                write('\n');
+                const command = input.trim();
+                input = '';
+                submitPending = false;
+                handleCommand(command);
+              }, 180);
+            } else if (ch >= ' ') {
+              input += ch;
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(3), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "stable"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-3-pro-preview,gemini-2.5-flash"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "60"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "220"
+        environment["PROMPT_SUBMIT_SETTLE_MS"] = "260"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "40"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "1200"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(11)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/stats"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains { $0.contains("/clear/stats") || $0.contains("/stats/model") }, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(stdout.contains("/clear/stats"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(stdout.contains("/stats/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerRetriesStartupSlashCommandEnterWhenInputSticks() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let inputBuffer = '';
+        let statsEnterAttempts = 0;
+        let modelEnterAttempts = 0;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelSeen = false;
+        let modelClosed = false;
+        let promptSeen = false;
+        let modelPanelOpen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writePrompt(text = inputBuffer) {
+          write('\n'.repeat(80));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write(' ● YOLO\n');
+          write(text ? '* ' + text + '\n' : '*   Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     ...\n');
+        }
+
+        function writeStats() {
+          write('\nSession Stats\n');
+          write('Session ID: startup-enter-retry\n');
+          write('Auth Method: Signed in with Google (smoke@example.com)\n');
+          write('Tier: Gemini Code Assist for individuals\n');
+          write('Model Usage\n');
+          write('gemini-3-flash-preview          1            0            0             0\n');
+        }
+
+        function writeModelPanel() {
+          modelPanelOpen = true;
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Select Model                                                                 │\n');
+          write('│ ● 1. Manual (gemini-3-flash-preview)                                         │\n');
+          write('│                                                                              │\n');
+          write('│ Model usage                                                                  │\n');
+          write('│ Flash           ▬                                      7%                    │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function submit(command) {
+          if (!command) return;
+
+          if (command === '/stats' && statsEnterAttempts === 0) {
+            statsEnterAttempts += 1;
+            logCommand('__STATS_ENTER_SWALLOWED__');
+            inputBuffer = '/stats';
+            writePrompt(inputBuffer);
+            return;
+          }
+
+          if (command === '/model' && modelEnterAttempts === 0) {
+            modelEnterAttempts += 1;
+            logCommand('__MODEL_ENTER_SWALLOWED__');
+            inputBuffer = '/model';
+            writePrompt(inputBuffer);
+            return;
+          }
+
+          logCommand(command);
+          inputBuffer = '';
+
+          if (command === '/clear') {
+            clearSeen = true;
+            writePrompt('');
+          } else if (command === '/stats') {
+            statsSeen = true;
+            statsEnterAttempts += 1;
+            writeStats();
+            writePrompt('');
+          } else if (command === '/model') {
+            modelSeen = true;
+            modelEnterAttempts += 1;
+            writeModelPanel();
+          } else if (command === 'Ship beta now') {
+            promptSeen = true;
+            write('\nWorking on it\n');
+            writePrompt('');
+          } else {
+            write('\nUnexpected command: ' + command + '\n');
+            setTimeout(() => process.exit(8), 40);
+          }
+        }
+
+        write('Gemini CLI v0.41.0-nightly\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt('');
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const char of String(data || '')) {
+            if (modelPanelOpen && char === '\u001B') {
+              modelPanelOpen = false;
+              modelClosed = true;
+              logCommand('__MODEL_ESC__');
+              writePrompt('');
+              continue;
+            }
+
+            if (char === '\u0015') {
+              inputBuffer = '';
+              logCommand('__CTRL_U__');
+              writePrompt('');
+            } else if (char === '\r' || char === '\n') {
+              submit(inputBuffer.trim());
+            } else if (char === '\u001B') {
+              logCommand('__ESC__');
+            } else if (char >= ' ') {
+              inputBuffer += char;
+              writePrompt(inputBuffer);
+            }
+          }
+
+          if (clearSeen && statsSeen && modelSeen && modelClosed && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(promptSeen ? 0 : 5), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "nightly"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "80"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "40"
+        environment["PROMPT_SUBMIT_SETTLE_MS"] = "80"
+        environment["PROMPT_SUBMIT_PROCESSING_GRACE_MS"] = "80"
+        environment["INITIAL_PROMPT_SUBMIT_CONFIRM_MS"] = "80"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "50"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "40"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "1400"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(12)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__STATS_ENTER_SWALLOWED__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__MODEL_ENTER_SWALLOWED__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/stats"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__MODEL_ESC__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("/stats is still in the input field; retrying Enter"), stderr)
+        XCTAssertTrue(stderr.contains("/model is still in the input field; retrying Enter"), stderr)
+        XCTAssertFalse(commands.contains { $0.contains("/stats/model") || $0.contains("/modelShip beta now") }, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerSubmitsStartupModelAfterAutocompleteDismissal() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let input = '';
+        let modelAutocompleteDismissed = false;
+        let modelPanelOpen = false;
+        let swallowedPromptEnter = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(command) {
+          fs.appendFileSync(logPath, command + '\n');
+        }
+
+        function writePrompt(text = input) {
+          write('\n'.repeat(80));
+          write('? for shortcuts\n');
+          write(text ? '* ' + text + '\n' : '*   Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     ...\n');
+        }
+
+        function submit(command) {
+          if (!command) return;
+          logCommand(command);
+          if (command === '/clear') {
+            writePrompt('');
+          } else if (command === '/stats') {
+            write('\nSession Stats\n');
+            write('Session ID: startup-model-autocomplete\n');
+            write('Auth Method: Signed in with Google (smoke@example.com)\n');
+            write('Tier: Gemini Code Assist for individuals\n');
+            write('Model Usage\n');
+            write('gemini-3-flash-preview          1            0            0             0\n');
+            writePrompt('');
+          } else if (command === '/model') {
+            modelPanelOpen = true;
+            write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+            write('│ Select Model                                                                 │\n');
+            write('│ ● 1. Manual (gemini-3-flash-preview)                                         │\n');
+            write('│ Model usage                                                                  │\n');
+            write('│ Flash           ▬                                      7%                    │\n');
+            write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+          } else if (command === 'lint features and fix') {
+            write('\nWorking on it\n');
+            setTimeout(() => process.exit(0), 80);
+          }
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt('');
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const char of String(data || '')) {
+            if (char === '\u0015') {
+              input = '';
+              modelAutocompleteDismissed = false;
+              writePrompt('');
+            } else if (char === '\u001B') {
+              if (modelPanelOpen) {
+                modelPanelOpen = false;
+                input = '';
+                writePrompt('');
+              } else if (input.trim() === '/model') {
+                modelAutocompleteDismissed = true;
+                writePrompt(input);
+              }
+            } else if (char === '\r' || char === '\n') {
+              const command = input.trim();
+              if (command === '/model' && !modelAutocompleteDismissed) {
+                logCommand('__MODEL_ENTER_SWALLOWED__');
+                writePrompt(input);
+                continue;
+              }
+              if (command === 'lint features and fix' && !swallowedPromptEnter) {
+                swallowedPromptEnter = true;
+                logCommand('__PROMPT_ENTER_SWALLOWED__');
+                writePrompt(input);
+                continue;
+              }
+              input = '';
+              modelAutocompleteDismissed = false;
+              submit(command);
+            } else if (char >= ' ') {
+              input += char;
+              writePrompt(input);
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(5), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "lint features and fix"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "100"
+        environment["STARTUP_VISIBLE_PROMPT_COMMAND_SETTLE_MS"] = "40"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "50"
+        environment["PROMPT_SUBMIT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "40"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["INITIAL_PROMPT_SUBMIT_CONFIRM_MS"] = "80"
+        environment["INITIAL_PROMPT_SUBMIT_RETRY_MAX"] = "2"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "50"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "900"
+        environment["RAW_TAIL_MAX"] = "20000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(11)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains("__MODEL_ENTER_SWALLOWED__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__PROMPT_ENTER_SWALLOWED__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("lint features and fix"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("retrying Enter"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotDelayPromptAfterSoftStartupStatsFailure() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        process.env.GEMINI_INITIAL_PROMPT = "Ship beta now";
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = {
+            pendingStartup: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupStatsObserved: false,
+              startupStatsBlockedReason: '',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: { kind: 'startup-stats-finalize' },
+            }),
+            softFailure: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupStatsObserved: false,
+              startupStatsBlockedReason: 'startup /stats output was not detected in time',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: null,
+            }),
+            softFailureWithModelPending: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupStatsObserved: false,
+              startupStatsBlockedReason: 'startup /stats output was not detected in time',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: { kind: 'startup-model' },
+            }),
+            hardFailure: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupStatsObserved: false,
+              startupStatsBlockedReason: 'startup /clear did not return to the chat prompt in time',
+              startupStatsBlocksInitialPrompt: true,
+              pendingPromptCommand: null,
+            }),
+            observedBeforeModel: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupClearCompleted: true,
+              startupStatsObserved: true,
+              startupModelCapacityObserved: false,
+              startupStatsBlockedReason: '',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: null,
+            }),
+            observed: mod._test.shouldDelayInitialPromptForStartupStats({
+              hasInitialPrompt: true,
+              startupClearCompleted: true,
+              startupStatsObserved: true,
+              startupModelCapacityObserved: true,
+              startupStatsBlockedReason: '',
+              startupStatsBlocksInitialPrompt: false,
+              pendingPromptCommand: null,
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["pendingStartup"] as? Bool, true)
+        XCTAssertEqual(payload["softFailure"] as? Bool, false)
+        XCTAssertEqual(payload["softFailureWithModelPending"] as? Bool, true)
+        XCTAssertEqual(payload["hardFailure"] as? Bool, true)
+        XCTAssertEqual(payload["observedBeforeModel"] as? Bool, true)
+        XCTAssertEqual(payload["observed"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerDescribesStartupTelemetryAsBestEffort() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = {
+            pipeline: mod._test.startupPipelineLabel(),
+            gate: mod._test.startupPromptGateLabel(),
+            promptQueue: mod._test.startupPromptDeliveryQueueLabel(),
+            sequence: mod._test.startupSequenceQueuedLabel(),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["pipeline"] as? String, "/clear -> /stats -> /model")
+        XCTAssertEqual(payload["gate"] as? String, "/clear")
+        XCTAssertEqual(payload["promptQueue"] as? String, "/clear; telemetry /stats -> /model best effort")
+        XCTAssertEqual(payload["sequence"] as? String, "/clear -> /stats -> /model; telemetry best effort")
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotAutoContinueOnInitialPromptFingerprint() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const stalePrompt = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptFingerprint: 'workspace | ready',
+          };
+          const returnedPrompt = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptFingerprint: 'workspace | response finished',
+          };
+          const busyPrompt = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptFingerprint: 'workspace | user typing',
+            promptInputText: 'manual task in progress',
+          };
+          const payload = {
+            stale: mod._test.shouldAutoContinuePrompt(stalePrompt, {
+              autoContinueMode: 'always',
+              continueLoopArmed: true,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+            returned: mod._test.shouldAutoContinuePrompt(returnedPrompt, {
+              autoContinueMode: 'always',
+              continueLoopArmed: true,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+            unarmed: mod._test.shouldAutoContinuePrompt(returnedPrompt, {
+              autoContinueMode: 'always',
+              continueLoopArmed: false,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+            promptOnly: mod._test.shouldAutoContinuePrompt(returnedPrompt, {
+              autoContinueMode: 'prompt_only',
+              continueLoopArmed: true,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+            manualAlwaysOverride: mod._test.shouldAutoContinuePrompt(returnedPrompt, {
+              autoContinueMode: 'prompt_only',
+              promptAutoContinueAlways: true,
+              continueLoopArmed: true,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+            busyPrompt: mod._test.shouldAutoContinuePrompt(busyPrompt, {
+              autoContinueMode: 'always',
+              promptAutoContinueAlways: true,
+              continueLoopArmed: true,
+              initialPromptSubmittedFingerprint: 'workspace | ready',
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["stale"] as? Bool, false)
+        XCTAssertEqual(payload["returned"] as? Bool, true)
+        XCTAssertEqual(payload["unarmed"] as? Bool, false)
+        XCTAssertEqual(payload["promptOnly"] as? Bool, false)
+        XCTAssertEqual(payload["manualAlwaysOverride"] as? Bool, true)
+        XCTAssertEqual(payload["busyPrompt"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerSelectsRecoveryPromptAfterRepeatedConcludedSessions() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let firstConcludedMessage = """
+        ✦ The requested refactoring work is complete and verified.
+          No further automated instructions are pending, so I am idle until a new task starts.
+        """
+        let secondConcludedMessage = """
+        ✦ All linting and stabilization tasks are done successfully.
+          I am standing by for a new session or another development request.
+        """
+        let singleConcludedTranscript = """
+        > continue
+        \(firstConcludedMessage)
+        """
+        let repeatedConcludedTranscript = """
+        > continue
+        \(firstConcludedMessage)
+
+        > continue
+        \(secondConcludedMessage)
+        """
+        let encodedSingleTranscript = String(data: try JSONEncoder().encode(singleConcludedTranscript), encoding: .utf8) ?? "\"\""
+        let encodedRepeatedTranscript = String(data: try JSONEncoder().encode(repeatedConcludedTranscript), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const singleConcluded = \(encodedSingleTranscript);
+          const repeatedConcluded = \(encodedRepeatedTranscript);
+          const snapshot = {
+            kind: 'normal',
+            chatPromptActive: true,
+            promptFingerprint: 'workspace | concluded',
+          };
+          const singleOptions = {
+            visibleText: singleConcluded,
+            continueCommand: 'continue',
+            continueFallbackCommand: 'continue to next refactor',
+          };
+          const repeatedOptions = {
+            visibleText: repeatedConcluded,
+            continueCommand: 'continue',
+            continueFallbackCommand: 'continue to next refactor',
+          };
+          const normal = mod._test.selectedAutoContinueCommand(snapshot, {
+            visibleText: '✦ Working normally\\n> ',
+            continueCommand: 'continue',
+            continueFallbackCommand: 'continue to next refactor',
+          });
+          const fallback = mod._test.selectedAutoContinueCommand(snapshot, repeatedOptions);
+          const payload = {
+            singleBlockCount: mod._test.concludedSessionKeywordBlockCount(singleConcluded),
+            repeatedBlockCount: mod._test.concludedSessionKeywordBlockCount(repeatedConcluded),
+            firstFamilies: mod._test.concludedSessionKeywordFamilies(singleConcluded),
+            secondFamilies: mod._test.concludedSessionKeywordFamilies(repeatedConcluded.split('> continue').at(-1)),
+            singleShouldUseFallback: mod._test.shouldUseContinueFallbackPrompt(snapshot, singleOptions),
+            shouldUseFallback: mod._test.shouldUseContinueFallbackPrompt(snapshot, repeatedOptions),
+            hasRepeatedConcluded: mod._test.hasRepeatedConcludedSessionText(repeatedConcluded),
+            fallback,
+            normal,
+            samePromptFallback: mod._test.shouldUseContinueFallbackPrompt(snapshot, {
+              visibleText: repeatedConcluded,
+              continueCommand: 'continue',
+              continueFallbackCommand: 'continue',
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["singleBlockCount"] as? Int, 1)
+        XCTAssertEqual(payload["repeatedBlockCount"] as? Int, 2)
+        XCTAssertEqual(payload["singleShouldUseFallback"] as? Bool, false)
+        XCTAssertEqual(payload["shouldUseFallback"] as? Bool, true)
+        XCTAssertEqual(payload["hasRepeatedConcluded"] as? Bool, true)
+        XCTAssertEqual(payload["samePromptFallback"] as? Bool, false)
+
+        let fallback = try XCTUnwrap(payload["fallback"] as? [String: Any])
+        XCTAssertEqual(fallback["text"] as? String, "continue to next refactor")
+        XCTAssertEqual(fallback["reason"] as? String, "auto-continue recovery prompt")
+        XCTAssertEqual(fallback["usingFallback"] as? Bool, true)
+
+        let normal = try XCTUnwrap(payload["normal"] as? [String: Any])
+        XCTAssertEqual(normal["text"] as? String, "continue")
+        XCTAssertEqual(normal["reason"] as? String, "auto-continue prompt")
+        XCTAssertEqual(normal["usingFallback"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerManualInputAndEnableArmContinuousContinueMode() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = {
+            textOnlySubmits: mod._test.manualInputSubmitsPrompt([...Buffer.from('manual prompt')]),
+            carriageReturnSubmits: mod._test.manualInputSubmitsPrompt([...Buffer.from('manual prompt\\r')]),
+            lineFeedSubmits: mod._test.manualInputSubmitsPrompt([...Buffer.from('manual prompt\\n')]),
+            manualEnableForcesAlways: mod._test.shouldForceAlwaysAutoContinueOnAutomationEnable('manual'),
+            defaultEnableForcesAlways: mod._test.shouldForceAlwaysAutoContinueOnAutomationEnable(),
+            usageRecoveryKeepsConfiguredMode: mod._test.shouldForceAlwaysAutoContinueOnAutomationEnable('usage_limit_recovery'),
+            promptOnlyMode: mod._test.effectiveAutoContinueMode({ autoContinueMode: 'prompt_only' }),
+            manualOverrideMode: mod._test.effectiveAutoContinueMode({
+              autoContinueMode: 'prompt_only',
+              promptAutoContinueAlways: true,
+            }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["textOnlySubmits"] as? Bool, false)
+        XCTAssertEqual(payload["carriageReturnSubmits"] as? Bool, true)
+        XCTAssertEqual(payload["lineFeedSubmits"] as? Bool, true)
+        XCTAssertEqual(payload["manualEnableForcesAlways"] as? Bool, true)
+        XCTAssertEqual(payload["defaultEnableForcesAlways"] as? Bool, true)
+        XCTAssertEqual(payload["usageRecoveryKeepsConfiguredMode"] as? Bool, false)
+        XCTAssertEqual(payload["promptOnlyMode"] as? String, "prompt_only")
+        XCTAssertEqual(payload["manualOverrideMode"] as? String, "always")
+    }
+
+    func testBundledGeminiAutomationRunnerManualPromptReenableContinuesEndToEnd() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let buffered = '';
+        let promptGeneration = 0;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(command) {
+          fs.appendFileSync(logPath, command + '\n');
+        }
+
+        function writePrompt() {
+          promptGeneration += 1;
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     turn-' + promptGeneration + '\n');
+          write('> ');
+        }
+
+        function consumeCompleteLines() {
+          let newlineIndex = buffered.indexOf('\n');
+          while (newlineIndex >= 0) {
+            const line = buffered.slice(0, newlineIndex).trim();
+            buffered = buffered.slice(newlineIndex + 1);
+            if (line) {
+              logCommand(line);
+            }
+            if (line === 'manual task') {
+              write('\nWorking on manual task...\n');
+              setTimeout(writePrompt, 180);
+            } else if (line === 'continue refactor') {
+              write('\nContinuing after manual recovery\n');
+              setTimeout(() => process.exit(0), 60);
+            }
+            newlineIndex = buffered.indexOf('\n');
+          }
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          buffered += String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/\r/g, '\n')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+          consumeCompleteLines();
+        });
+
+        setTimeout(() => process.exit(7), 6000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["CONTINUE_COMMAND"] = "continue refactor"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["STARTUP_CLEAR_COMMAND"] = " "
+        environment["STARTUP_STATS_COMMAND"] = " "
+        environment["STARTUP_MODEL_COMMAND"] = " "
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "80"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "30"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "50"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["HOTKEY_PREFIX"] = "ctrl-g"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "16000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        Thread.sleep(forTimeInterval: 0.6)
+        stdinPipe.fileHandleForWriting.write(Data("manual task\r".utf8))
+        Thread.sleep(forTimeInterval: 0.1)
+        stdinPipe.fileHandleForWriting.write(Data([0x07, 0x6f]))
+
+        let deadline = Date().addingTimeInterval(8)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 && stderr.contains("Automation features and hotkeys are disabled in fallback mode") {
+            throw XCTSkip("PTY input automation is unavailable in this test environment.")
+        }
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands, ["manual task", "continue refactor"], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Automation enabled; continuous continue refactor mode armed."), stderr)
+        XCTAssertFalse(stderr.contains("Manual typing pauses automation"), stderr)
+        XCTAssertFalse(stderr.contains("[fatal]"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotContinueIntoPartialManualPromptEndToEnd() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let buffered = '';
+        let promptGeneration = 0;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(command) {
+          fs.appendFileSync(logPath, command + '\n');
+        }
+
+        function writePrompt(input = '') {
+          promptGeneration += 1;
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write(input ? '> ' + input : '> ');
+          write('\nworkspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     turn-' + promptGeneration + '\n');
+        }
+
+        function consumeCompleteLines() {
+          let newlineIndex = buffered.indexOf('\n');
+          while (newlineIndex >= 0) {
+            const line = buffered.slice(0, newlineIndex).trim();
+            buffered = buffered.slice(newlineIndex + 1);
+            if (line) {
+              logCommand(line);
+            }
+            if (line.includes('continue')) {
+              process.exit(6);
+            }
+            newlineIndex = buffered.indexOf('\n');
+          }
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const cleaned = String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/\r/g, '\n')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+          buffered += cleaned;
+          writePrompt(buffered.replace(/\n/g, ''));
+          consumeCompleteLines();
+        });
+
+        setTimeout(() => process.exit(0), 1500);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["STARTUP_CLEAR_COMMAND"] = " "
+        environment["STARTUP_STATS_COMMAND"] = " "
+        environment["STARTUP_MODEL_COMMAND"] = " "
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "80"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "30"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "50"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["HOTKEY_PREFIX"] = "ctrl-g"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "16000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        Thread.sleep(forTimeInterval: 0.6)
+        stdinPipe.fileHandleForWriting.write(Data("partial manual prompt".utf8))
+        Thread.sleep(forTimeInterval: 0.1)
+        stdinPipe.fileHandleForWriting.write(Data([0x07, 0x6f]))
+
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 && stderr.contains("Automation features and hotkeys are disabled in fallback mode") {
+            throw XCTSkip("PTY input automation is unavailable in this test environment.")
+        }
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands, [], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Automation enabled; continuous continue mode armed."), stderr)
+        XCTAssertFalse(stderr.contains("[fatal]"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerDelaysEnterForPromptAndSlashAutomation() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = {
+            initialPrompt: mod._test.shouldSubmitWithDelayedEnter('vitest and fix', 'initial-prompt'),
+            continuePrompt: mod._test.shouldSubmitWithDelayedEnter('continue', 'continue'),
+            slashCommand: mod._test.shouldSubmitWithDelayedEnter('/clear', 'startup-clear'),
+            modelCommand: mod._test.shouldSubmitWithDelayedEnter('/model set gemini-3-flash-preview', 'model-switch gemini-3-flash-preview'),
+            arbitrarySlashCommand: mod._test.shouldSubmitWithDelayedEnter('/help', 'manual'),
+            menuChoice: mod._test.shouldSubmitWithDelayedEnter('2', 'permission'),
+            yesNoApproval: mod._test.shouldSubmitWithDelayedEnter('y', 'yolo-auto-approve'),
+            arbitraryTextCommand: mod._test.shouldSubmitWithDelayedEnter('Ship beta now', 'model-manage'),
+            disabled: mod._test.shouldSubmitWithDelayedEnter('vitest and fix', 'initial-prompt', { submitDelayMs: 0 }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["initialPrompt"] as? Bool, true)
+        XCTAssertEqual(payload["continuePrompt"] as? Bool, true)
+        XCTAssertEqual(payload["slashCommand"] as? Bool, true)
+        XCTAssertEqual(payload["modelCommand"] as? Bool, true)
+        XCTAssertEqual(payload["arbitrarySlashCommand"] as? Bool, false)
+        XCTAssertEqual(payload["menuChoice"] as? Bool, false)
+        XCTAssertEqual(payload["yesNoApproval"] as? Bool, false)
+        XCTAssertEqual(payload["arbitraryTextCommand"] as? Bool, false)
+        XCTAssertEqual(payload["disabled"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerSubmitsInitialPromptWithDelayedEnterEndToEnd() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let buffered = '';
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     ...\n');
+          write('> ');
+        }
+
+        function consumeCompleteLines() {
+          let newlineIndex = buffered.indexOf('\n');
+          while (newlineIndex >= 0) {
+            const line = buffered.slice(0, newlineIndex).trim();
+            buffered = buffered.slice(newlineIndex + 1);
+            if (line) {
+              fs.appendFileSync(logPath, line + '\n');
+            }
+            if (line === 'vitest and fix') {
+              write('\naccepted prompt after newline\n');
+              setTimeout(() => process.exit(0), 60);
+            }
+            newlineIndex = buffered.indexOf('\n');
+          }
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          buffered += String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/\r/g, '\n')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+          consumeCompleteLines();
+        });
+
+        setTimeout(() => process.exit(7), 3500);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "vitest and fix"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["STARTUP_CLEAR_COMMAND"] = " "
+        environment["STARTUP_STATS_COMMAND"] = " "
+        environment["STARTUP_MODEL_COMMAND"] = " "
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "80"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "40"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "16000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(6)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands, ["vitest and fix"], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Auto-sending initial prompt"), stderr)
+        XCTAssertFalse(stderr.contains("[fatal]"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerRetriesInitialPromptWhenEnterIsSwallowed() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let input = '';
+        let swallowedPromptEnter = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(command) {
+          fs.appendFileSync(logPath, command + '\n');
+        }
+
+        function writePrompt(text = input) {
+          write('\n'.repeat(80));
+          write('? for shortcuts\n');
+          write(text ? '* ' + text + '\n' : '*   Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     ...\n');
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt('');
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const char of String(data || '')) {
+            if (char === '\u0015') {
+              input = '';
+              writePrompt('');
+            } else if (char === '\r' || char === '\n') {
+              const command = input.trim();
+              if (command === 'lint features and fix' && !swallowedPromptEnter) {
+                swallowedPromptEnter = true;
+                logCommand('__PROMPT_ENTER_SWALLOWED__');
+                writePrompt(input);
+                continue;
+              }
+              if (command === 'lint features and fix') {
+                logCommand(command);
+                input = '';
+                write('\naccepted prompt after retry\n');
+                setTimeout(() => process.exit(0), 60);
+              }
+            } else if (char >= ' ') {
+              input += char;
+              writePrompt(input);
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(7), 5000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "lint features and fix"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["STARTUP_CLEAR_COMMAND"] = " "
+        environment["STARTUP_STATS_COMMAND"] = " "
+        environment["STARTUP_MODEL_COMMAND"] = " "
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "60"
+        environment["PROMPT_SUBMIT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "40"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["INITIAL_PROMPT_SUBMIT_CONFIRM_MS"] = "80"
+        environment["INITIAL_PROMPT_SUBMIT_RETRY_MAX"] = "2"
+        environment["QUICK_RECHECK_MS"] = "30"
+        environment["STATIC_RECHECK_MS"] = "50"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "16000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(7)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__PROMPT_ENTER_SWALLOWED__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("lint features and fix"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("retrying Enter"), stderr)
     }
 
     func testBundledGeminiAutomationRunnerForcesFreshSessionWhenPromptExistsEvenIfResumeLatestIsEnabled() throws {
@@ -4922,6 +7401,234 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(rows.last?["model"] as? String, "Flash Lite")
     }
 
+    func testBundledGeminiAutomationRunnerExtractsStartupModelSelectorWithoutUsageRows() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let transcript = """
+        ╭──────────────────────────────────────────────────────────────────────────────╮
+        │ Select Model                                                                 │
+        │ ● 1. gemini-3-flash-preview                                                  │
+        │   2. gemini-3.1-flash-lite-preview                                           │
+        │   3. gemini-2.5-flash                                                        │
+        │   4. gemini-2.5-flash-lite                                                   │
+        │                                                                              │
+        │ Remember model for future sessions: false (Press Tab to toggle)              │
+        │ > To use a specific Gemini model on startup, use the --model flag.           │
+        │                                                                              │
+        │ (Press Esc to close)                                                         │
+        ╰──────────────────────────────────────────────────────────────────────────────╯
+        """
+        let encodedTranscript = String(data: try JSONEncoder().encode(transcript), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const snapshot = mod._test.extractStartupModelCapacitySnapshot(\(encodedTranscript));
+          const closed = mod._test.hasStartupModelCapacityClosed(
+            { kind: 'normal', chatPromptActive: true, promptInputText: '' },
+            { screenText: \(encodedTranscript), visibleText: \(encodedTranscript), waitedForMs: 1000 }
+          );
+          process.stdout.write(JSON.stringify({ snapshot, closed }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        let snapshot = try XCTUnwrap(payload["snapshot"] as? [String: Any])
+        let rows = try XCTUnwrap(snapshot["rows"] as? [[String: Any]])
+
+        XCTAssertEqual(snapshot["currentModel"] as? String, "gemini-3-flash-preview")
+        XCTAssertEqual(rows.count, 0)
+        XCTAssertEqual(payload["closed"] as? Bool, false)
+    }
+
+    func testBundledGeminiAutomationRunnerSwitchesFromStartupFullCapacityModelBeforePrompt() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        let activeModel = launchModel;
+        let modelPanelOpen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, activeModel + ':' + line + '\n');
+        }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + activeModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function writeScreenWithoutPrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          writeStatusRow();
+        }
+
+        function writeModelPanel() {
+          modelPanelOpen = true;
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Select Model                                                                 │\n');
+          write('│ Manual (' + activeModel + ')                                                  │\n');
+          write('│ Model usage                                                                  │\n');
+          write('│ gemini-3-flash-preview 100% Resets: 1:29 PM                                  │\n');
+          write('│ gemini-3-pro-preview 0%                                                       │\n');
+          write('│ gemini-2.5-flash 0%                                                          │\n');
+          write('│ Press Esc to close                                                           │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        write('Gemini CLI v0.39.0\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const raw = String(data || '');
+          if (modelPanelOpen && raw.includes('\u001B')) {
+            modelPanelOpen = false;
+            writeScreenWithoutPrompt();
+            setTimeout(writePrompt, 450);
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              writePrompt();
+            } else if (command === '/stats') {
+              write('Session Stats\n');
+              write('Session ID: startup-capacity\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              writeModelPanel();
+            } else if (command === '/model set gemini-2.5-flash') {
+              activeModel = 'gemini-2.5-flash';
+              writePrompt();
+            } else if (command === '/model set gemini-3-pro-preview') {
+              process.exit(6);
+            } else if (command === 'vitest and fix issues') {
+              if (activeModel === launchModel) {
+                process.exit(5);
+              }
+              write('\nWorking on fallback model\n');
+              setTimeout(() => process.exit(0), 80);
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(4), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "stable"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-3-pro-preview,gemini-2.5-flash"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "vitest and fix issues"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "20"
+        environment["STARTUP_FIRST_COMMAND_DELAY_MS"] = "0"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "900"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(11)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/model set gemini-2.5-flash"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-2.5-flash:vitest and fix issues"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains("gemini-3-flash-preview:vitest and fix issues"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains("gemini-3-flash-preview:/model set gemini-3-pro-preview"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Startup model capacity shows gemini-3-flash-preview is at 100% usage — queueing in-session switch to gemini-2.5-flash"), stderr)
+    }
+
     func testBundledGeminiAutomationRunnerAllowsStartupStatsWithoutVisiblePromptWhenScreenIsSettled() throws {
         let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
         let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
@@ -4930,7 +7637,7 @@ final class AiderCommandBuilderTests: XCTestCase {
           const allowed = mod._test.canSendPromptCommandWithoutVisiblePrompt(
             { kind: 'startup-stats', createdAt: Date.now() - 1500 },
             { kind: 'normal', chatPromptActive: false },
-            { quietForMs: 1500, waitedForMs: 1500, authWaiting: false }
+            { quietForMs: 1500, waitedForMs: 1500, authWaiting: false, promptReadySurface: true }
           );
           process.stdout.write(String(allowed));
         }).catch((error) => {
@@ -4942,6 +7649,28 @@ final class AiderCommandBuilderTests: XCTestCase {
         let result = try runNodeScript(script)
         XCTAssertEqual(result.terminationStatus, 0, result.stderr)
         XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "true")
+    }
+
+    func testBundledGeminiAutomationRunnerDoesNotSendStartupCommandOnQuietNonPromptScreen() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const allowed = mod._test.canSendPromptCommandWithoutVisiblePrompt(
+            { kind: 'startup-clear', createdAt: Date.now() - 3000 },
+            { kind: 'normal', chatPromptActive: false },
+            { quietForMs: 3000, waitedForMs: 3000, authWaiting: false, promptReadySurface: false }
+          );
+          process.stdout.write(String(allowed));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "false")
     }
 
     func testBundledGeminiAutomationRunnerWaitsForStartupStatsPanelToClearBeforeFinalizing() throws {
@@ -5110,7 +7839,7 @@ final class AiderCommandBuilderTests: XCTestCase {
             "gemini-3-flash-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash-lite"
         ]
         let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
         let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
@@ -5130,6 +7859,2974 @@ final class AiderCommandBuilderTests: XCTestCase {
         XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "3")
     }
 
+    func testBundledGeminiAutomationRunnerBuildsDirectModelSwitchForPolicyFallback() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const command = mod._test.buildDirectModelSwitchCommand(
+            1,
+            'Free-tier policy banner detected',
+            \(encodedChain)
+          );
+          process.stdout.write(JSON.stringify(command));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["kind"] as? String, "model-switch")
+        XCTAssertEqual(payload["text"] as? String, "/model set gemini-3-flash-preview")
+        XCTAssertEqual(payload["targetModel"] as? String, "gemini-3-flash-preview")
+    }
+
+    func testBundledGeminiAutomationRunnerConfirmsDirectModelSwitchOnlyFromVisibleModelState() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let staleStatusTranscript = """
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-pro-preview     ...
+        >
+        """
+        let switchedStatusTranscript = """
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-pro-preview     ...
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-flash-preview     ...
+        >
+        """
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedStaleTranscript = String(data: try JSONEncoder().encode(staleStatusTranscript), encoding: .utf8) ?? "\"\""
+        let encodedSwitchedTranscript = String(data: try JSONEncoder().encode(switchedStatusTranscript), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const stale = \(encodedStaleTranscript);
+          const switched = \(encodedSwitchedTranscript);
+          const staleResolution = mod._test.resolveDirectModelSwitchConfirmation('gemini-3-flash-preview', {
+            screenText: stale,
+          });
+          const switchedResolution = mod._test.resolveDirectModelSwitchConfirmation('gemini-3-flash-preview', {
+            screenText: switched,
+          });
+          const payload = {
+            staleVisibleModel: mod._test.extractVisibleCurrentModel(stale),
+            switchedVisibleModel: mod._test.extractVisibleCurrentModel(switched),
+            staleConfirmed: staleResolution.confirmed,
+            staleObservedModel: staleResolution.observedModel,
+            switchedConfirmed: switchedResolution.confirmed,
+            switchedObservedModel: switchedResolution.observedModel,
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["staleVisibleModel"] as? String, "gemini-3-pro-preview")
+        XCTAssertEqual(payload["staleObservedModel"] as? String, "gemini-3-pro-preview")
+        XCTAssertEqual(payload["staleConfirmed"] as? Bool, false)
+        XCTAssertEqual(payload["switchedVisibleModel"] as? String, "gemini-3-flash-preview")
+        XCTAssertEqual(payload["switchedObservedModel"] as? String, "gemini-3-flash-preview")
+        XCTAssertEqual(payload["switchedConfirmed"] as? Bool, true)
+    }
+
+    func testBundledGeminiAutomationRunnerReconcilesVisibleModelBeforeFallbackSelection() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let statusTranscript = """
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         * /model set gemini-3-flash-preview
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-pro-preview     ...
+        >
+        """
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedTranscript = String(data: try JSONEncoder().encode(statusTranscript), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = mod._test.resolveModelIndexFromVisibleCurrentModel(
+            \(encodedChain),
+            1,
+            \(encodedTranscript)
+          );
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["modelIndex"] as? Int, 0)
+        XCTAssertEqual(payload["visibleModel"] as? String, "gemini-3-pro-preview")
+        XCTAssertEqual(payload["visibleIndex"] as? Int, 0)
+        XCTAssertEqual(payload["changed"] as? Bool, true)
+    }
+
+    func testBundledGeminiAutomationRunnerPrefersCurrentScreenModelOverRetainedTail() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let currentScreen = """
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-pro-preview     ...
+        >
+        """
+        let retainedTail = """
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-flash-preview     ...
+        >
+        """
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedCurrentScreen = String(data: try JSONEncoder().encode(currentScreen), encoding: .utf8) ?? "\"\""
+        let encodedRetainedTail = String(data: try JSONEncoder().encode(retainedTail), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const payload = mod._test.resolveModelIndexFromVisibleTerminalTexts(
+            \(encodedChain),
+            1,
+            \(encodedCurrentScreen),
+            \(encodedRetainedTail)
+          );
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["modelIndex"] as? Int, 0)
+        XCTAssertEqual(payload["visibleModel"] as? String, "gemini-3-pro-preview")
+        XCTAssertEqual(payload["visibleIndex"] as? Int, 0)
+        XCTAssertEqual(payload["changed"] as? Bool, true)
+    }
+
+    func testBundledGeminiAutomationRunnerCanIgnoreBackwardVisibleModelCorrectionForUsageLimit() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let staleCurrentScreen = """
+        workspace (/directory)     branch     sandbox       /model
+        /Users/.../clilauncher     main       no sandbox    gemini-3-pro-preview     ...
+        >
+        """
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedCurrentScreen = String(data: try JSONEncoder().encode(staleCurrentScreen), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const chain = \(encodedChain);
+          const payload = mod._test.resolveModelIndexFromVisibleTerminalTexts(
+            chain,
+            1,
+            \(encodedCurrentScreen),
+            "",
+            { allowBackward: false }
+          );
+          const nextIndex = mod._test.findNextEligibleModelIndexInChain(chain, payload.modelIndex);
+          process.stdout.write(JSON.stringify({ ...payload, nextIndex, nextModel: chain[nextIndex] }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["modelIndex"] as? Int, 1)
+        XCTAssertEqual(payload["visibleModel"] as? String, "gemini-3-pro-preview")
+        XCTAssertEqual(payload["visibleIndex"] as? Int, 0)
+        XCTAssertEqual(payload["changed"] as? Bool, false)
+        XCTAssertEqual(payload["ignored"] as? Bool, true)
+        XCTAssertEqual(payload["nextIndex"] as? Int, 2)
+        XCTAssertEqual(payload["nextModel"] as? String, "gemini-2.5-flash")
+    }
+
+    func testBundledGeminiAutomationRunnerModelSwitchPreemptsScheduledStartupCommand() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let chain = [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview"
+        ]
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const startupClear = {
+            kind: 'startup-clear',
+            text: '/clear',
+            label: '/clear',
+          };
+          const directSwitch = mod._test.buildDirectModelSwitchCommand(
+            1,
+            'Free-tier policy banner detected',
+            \(encodedChain)
+          );
+          const payload = {
+            staleStartupCurrent: mod._test.isPromptCommandStillCurrent(startupClear, directSwitch),
+            activeSwitchCurrent: mod._test.isPromptCommandStillCurrent(directSwitch, directSwitch),
+            startupCurrent: mod._test.isPromptCommandStillCurrent(startupClear, startupClear),
+            modelSwitchPriority: mod._test.promptCommandPriority('model-switch'),
+            statsSessionPriority: mod._test.promptCommandPriority('stats-session'),
+            startupPriority: mod._test.promptCommandPriority('startup-clear'),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["staleStartupCurrent"] as? Bool, false)
+        XCTAssertEqual(payload["activeSwitchCurrent"] as? Bool, true)
+        XCTAssertEqual(payload["startupCurrent"] as? Bool, true)
+        let modelSwitchPriority = try XCTUnwrap(payload["modelSwitchPriority"] as? Int)
+        let statsSessionPriority = try XCTUnwrap(payload["statsSessionPriority"] as? Int)
+        let startupPriority = try XCTUnwrap(payload["startupPriority"] as? Int)
+        XCTAssertGreaterThan(modelSwitchPriority, startupPriority)
+        XCTAssertGreaterThan(statsSessionPriority, startupPriority)
+    }
+
+    func testBundledGeminiAutomationRunnerDescribesPromptCommandSendDetail() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        import(\(encodedImportURL)).then((mod) => {
+          const command = {
+            kind: 'startup-clear',
+            text: '/clear',
+            createdAt: 1000,
+          };
+          const payload = {
+            visible: mod._test.describePromptCommandSendDetail(command, { chatPromptActive: true }, {
+              now: 2000,
+              quietForMs: 0,
+              waitedForMs: 1000,
+            }),
+            settled: mod._test.describePromptCommandSendDetail(command, { chatPromptActive: false }, {
+              now: 2000,
+              quietForMs: 1376,
+              waitedForMs: 1000,
+            }),
+            timeout: mod._test.describePromptCommandSendDetail(command, { chatPromptActive: false }, {
+              now: 1123,
+              quietForMs: 0,
+              waitedForMs: 123,
+            }),
+            ignored: mod._test.describePromptCommandSendDetail({ kind: 'model-switch', text: '/model set gemini-3-flash-preview' }, { chatPromptActive: true }),
+          };
+          process.stdout.write(JSON.stringify(payload));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["visible"] as? String, "visible prompt field")
+        XCTAssertEqual(payload["settled"] as? String, "settled normal screen (1376ms quiet)")
+        XCTAssertEqual(payload["timeout"] as? String, "prompt timeout (123ms)")
+        XCTAssertEqual(payload["ignored"] as? String, "")
+    }
+
+    func testBundledGeminiAutomationRunnerUsesShortStartupFirstCommandDelay() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let script = """
+        delete process.env.STARTUP_FIRST_COMMAND_DELAY_MS;
+        import(\(encodedImportURL)).then((mod) => {
+          const command = mod._test.buildStartupCommandPipeline({ startupStatsAutomationSupported: true });
+          process.stdout.write(JSON.stringify({
+            kind: command?.kind || '',
+            delayMs: Math.max(0, Number(command?.notBeforeAt || 0) - Number(command?.createdAt || 0)),
+          }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+
+        let result = try runNodeScript(script)
+        XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+        let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+        XCTAssertEqual(payload["kind"] as? String, "startup-clear")
+        let delayMs = try XCTUnwrap(payload["delayMs"] as? Int)
+        XCTAssertGreaterThanOrEqual(delayMs, 120)
+        XCTAssertLessThanOrEqual(delayMs, 260)
+    }
+
+    func testBundledGeminiAutomationRunnerContinuesInitialPromptWhenStartupStatsTimesOut() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-pro-preview     ...\n');
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('\nNo stats panel appeared for this fake CLI build.\n');
+              writePrompt();
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+              write('│ Select Model                                                                 │\n');
+              write('│ ● 1. Manual (gemini-3-pro-preview)                                           │\n');
+              write('│                                                                              │\n');
+              write('│ Model usage                                                                  │\n');
+              write('│ Pro             ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬                 82% Resets: 1:29 PM   │\n');
+              write('│ Flash           ▬                                      7%                    │\n');
+              write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              write('\nWorking on it\n> ');
+            }
+          }
+
+          if (clearSeen && statsSeen && modelPanelSeen && modelPanelClosed && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(0), 12000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-pro-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "50"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "350"
+        environment["RAW_TAIL_MAX"] = "20000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(14)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Startup session stats: unavailable (startup /stats output was not detected in time)"), stderr)
+        XCTAssertTrue(stderr.contains("Startup model capacity: captured"), stderr)
+        XCTAssertTrue(stderr.contains("Auto-sending initial prompt"), stderr)
+        XCTAssertFalse(stderr.contains("Initial prompt delivery: blocked until startup"), stderr)
+        XCTAssertFalse(stderr.contains("Startup sequence: blocked"), stderr)
+        XCTAssertTrue(commands.contains("/clear"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/stats"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        let modelCommandIndex = try XCTUnwrap(commands.firstIndex(of: "/model"))
+        let promptCommandIndex = try XCTUnwrap(commands.firstIndex(of: "Ship beta now"))
+        XCTAssertLessThan(modelCommandIndex, promptCommandIndex, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerClosesModelSelectorWithoutUsageRowsBeforeInitialPrompt() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-flash-preview     ...\n');
+          write('> ');
+        }
+
+        function writeModelSelectorWithoutUsageRows() {
+          modelPanelSeen = true;
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Select Model                                                                 │\n');
+          write('│ ● 1. gemini-3-flash-preview                                                  │\n');
+          write('│   2. gemini-3.1-flash-lite-preview                                           │\n');
+          write('│   3. gemini-2.5-flash                                                        │\n');
+          write('│   4. gemini-2.5-flash-lite                                                   │\n');
+          write('│                                                                              │\n');
+          write('│ Remember model for future sessions: false (Press Tab to toggle)              │\n');
+          write('│ > To use a specific Gemini model on startup, use the --model flag.           │\n');
+          write('│                                                                              │\n');
+          write('│ (Press Esc to close)                                                         │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        write('Gemini CLI v0.41.0-nightly\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && !modelPanelClosed && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            logCommand('__ESC__');
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('Session Stats\n');
+              write('Session ID: selector-without-usage\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('gemini-3-flash-preview          1            0            0             0\n');
+              writePrompt();
+            } else if (command === '/model') {
+              writeModelSelectorWithoutUsageRows();
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              write('\nWorking on it\n> ');
+            }
+          }
+
+          if (clearSeen && statsSeen && modelPanelSeen && modelPanelClosed && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(promptSeen ? 0 : 6), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "nightly"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "50"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "600"
+        environment["RAW_TAIL_MAX"] = "20000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(11)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Startup model capacity: captured (current gemini-3-flash-preview)"), stderr)
+        XCTAssertFalse(stderr.contains("startup /model output was not detected in time"), stderr)
+        XCTAssertTrue(commands.contains("/model"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__ESC__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        let escIndex = try XCTUnwrap(commands.firstIndex(of: "__ESC__"))
+        let promptCommandIndex = try XCTUnwrap(commands.firstIndex(of: "Ship beta now"))
+        XCTAssertLessThan(escIndex, promptCommandIndex, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerClearsStuckStartupModelInputBeforeInitialPrompt() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let inputBuffer = '';
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelStuck = false;
+        let ctrlUSeen = false;
+        let promptSeen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writePrompt(text = '') {
+          write('\n'.repeat(80));
+          write('? for shortcuts\n');
+          write(text ? '* ' + text + '\n' : '*   Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    gemini-3-pro-preview     ...\n');
+        }
+
+        function submit(command) {
+          if (!command) return;
+          if (command === '/clear') {
+            clearSeen = true;
+            logCommand(command);
+            writePrompt();
+          } else if (command === '/stats') {
+            statsSeen = true;
+            logCommand(command);
+            write('Session Stats\n');
+            write('Session ID: startup-stuck-model\n');
+            write('Auth Method: Signed in with Google (smoke@example.com)\n');
+            write('Tier: Gemini Code Assist for individuals\n');
+            write('Model Usage\n');
+            write('gemini-3-pro-preview          1            0            0             0\n');
+            writePrompt();
+          } else if (command === '/model' && !modelStuck) {
+            modelStuck = true;
+            inputBuffer = '/model';
+            logCommand('__MODEL_STUCK_IN_INPUT__');
+            writePrompt(inputBuffer);
+          } else if (command === 'Ship beta now') {
+            promptSeen = true;
+            logCommand(command);
+            write('\nWorking on it\n');
+            writePrompt();
+          } else {
+            logCommand(command);
+            writePrompt();
+          }
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const char of String(data || '')) {
+            if (char === '\u0015') {
+              ctrlUSeen = true;
+              inputBuffer = '';
+              logCommand('__CTRL_U__');
+              writePrompt();
+            } else if (char === '\r' || char === '\n') {
+              const command = inputBuffer.trim();
+              inputBuffer = '';
+              submit(command);
+            } else if (char >= ' ') {
+              inputBuffer += char;
+              writePrompt(inputBuffer);
+            }
+          }
+
+          if (clearSeen && statsSeen && modelStuck && ctrlUSeen && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(promptSeen ? 0 : 4), 7000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-pro-preview"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "100"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "60"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "80"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "50"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1200"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "350"
+        environment["RAW_TAIL_MAX"] = "20000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Startup session stats: unavailable (startup /model output was not detected in time)"), stderr)
+        XCTAssertTrue(commands.contains("__MODEL_STUCK_IN_INPUT__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("__CTRL_U__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains("/modelShip beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerPolicyBannerSwitchPreemptsStartupInjectionEndToEnd() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        let modelSwitchSeen = false;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('> ');
+        }
+
+        function writeStatusRow(model) {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + model + '     ...\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        write('> ');
+
+        setTimeout(() => {
+          write('\nWe are making changes to Gemini CLI that may impact your workflow.\n');
+          write('What is Changing: restricting models for free tier users.\n');
+          write('How it affects you: upgrade to a supported paid plan.\n');
+          write('Read more: https://goo.gle/geminicli-updates\n');
+          write('> ');
+        }, 45);
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/model set gemini-3-flash-preview') {
+              modelSwitchSeen = true;
+              write('\nModel set to gemini-3-flash-preview\n');
+              writeStatusRow('gemini-3-flash-preview');
+              write('> ');
+            } else if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('\u001B[2J\u001B[H');
+              write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+              write('│  Session Stats                                                               │\n');
+              write('│  Interaction Summary                                                         │\n');
+              write('│  Session ID:                 smoke-session                                   │\n');
+              write('│  Auth Method:                Signed in with Google (smoke@example.com)       │\n');
+              write('│  Tier:                       Gemini Code Assist for individuals              │\n');
+              write('│  Tool Calls:                 0 ( ✓ 0 x 0 )                                   │\n');
+              write('│  Performance                                                                 │\n');
+              write('│  Wall Time:                  1.2s                                            │\n');
+              write('│  Model Usage                                                                 │\n');
+              write('│  Model                         Reqs Input Tokens Cache Reads Output Tokens    │\n');
+              write('│  gemini-3-flash-preview          1            0            0             0   │\n');
+              write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+              setTimeout(() => {
+                writePrompt();
+              }, 120);
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('\u001B[2J\u001B[H');
+              write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+              write('│ Select Model                                                                 │\n');
+              write('│ ● 1. Manual (gemini-3-flash-preview)                                         │\n');
+              write('│   2. Auto                                                                    │\n');
+              write('│ Model usage                                                                  │\n');
+              write('│ Pro             ▬▬▬▬▬▬▬▬▬▬▬▬▬▬                         82% Resets: 1:29 PM   │\n');
+              write('│ Flash           ▬                                      7% Resets: 1:29 PM    │\n');
+              write('│ Flash Lite                                             0%                    │\n');
+              write('│ Press Esc to close                                                           │\n');
+              write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+              setTimeout(() => {
+                modelPanelClosed = true;
+                writePrompt();
+              }, 120);
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              write('\nWorking on it\n> ');
+            }
+          }
+
+          if (modelSwitchSeen && clearSeen && statsSeen && modelPanelSeen && modelPanelClosed && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(0), 12000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-pro-preview,gemini-3-flash-preview"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "180"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "80"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "50"
+        environment["STATIC_RECHECK_MS"] = "80"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "1000"
+        environment["RAW_TAIL_MAX"] = "20000"
+        environment["NORMALIZED_TAIL_MAX"] = "12000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(14)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Runner build: 20260426T090000Z"), stderr)
+        XCTAssertTrue(stderr.contains("Free-tier policy banner detected"), stderr)
+        XCTAssertTrue(stderr.contains("Startup session stats: captured"), stderr)
+        XCTAssertTrue(stderr.contains("Startup model capacity: captured"), stderr)
+        XCTAssertTrue(stderr.contains("Auto-sending initial prompt"), stderr)
+        XCTAssertFalse(stderr.contains("[fatal]"), stderr)
+        XCTAssertFalse(stderr.contains("ReferenceError"), stderr)
+        XCTAssertFalse(stderr.contains("sendReason"), stderr)
+        XCTAssertEqual(commands, [
+            "/model set gemini-3-flash-preview",
+            "/clear",
+            "/stats",
+            "/model",
+            "Ship beta now"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerRelaunchesWhenDirectModelSwitchIsNotConfirmed() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        const startsOnFlash = launchModel === 'gemini-3-flash-preview';
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writeStatusRow(model) {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + model + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow(launchModel || 'gemini-3-pro-preview');
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        if (!startsOnFlash) {
+          write('\nWe are making changes to Gemini CLI that may impact your workflow.\n');
+          write('What is Changing: restricting models for free tier users.\n');
+          write('How it affects you: upgrade to a supported paid plan.\n');
+          write('Read more: https://goo.gle/geminicli-updates\n');
+        }
+        writeStatusRow(launchModel || 'gemini-3-pro-preview');
+        write('> ');
+
+        process.stdin.setEncoding('utf8');
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/model set gemini-3-flash-preview') {
+              write('\nModel set command ignored by fake CLI\n');
+              writeStatusRow('gemini-3-pro-preview');
+              write('> ');
+            } else if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('\u001B[2J\u001B[H');
+              write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+              write('│  Session Stats                                                               │\n');
+              write('│  Interaction Summary                                                         │\n');
+              write('│  Session ID:                 smoke-session                                   │\n');
+              write('│  Auth Method:                Signed in with Google (smoke@example.com)       │\n');
+              write('│  Tier:                       Gemini Code Assist for individuals              │\n');
+              write('│  Tool Calls:                 0 ( ✓ 0 x 0 )                                   │\n');
+              write('│  Performance                                                                 │\n');
+              write('│  Wall Time:                  1.2s                                            │\n');
+              write('│  Model Usage                                                                 │\n');
+              write('│  Model                         Reqs Input Tokens Cache Reads Output Tokens    │\n');
+              write('│  gemini-3-flash-preview          1            0            0             0   │\n');
+              write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+              setTimeout(() => {
+                writePrompt();
+              }, 90);
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('\u001B[2J\u001B[H');
+              write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+              write('│ Select Model                                                                 │\n');
+              write('│ ● 1. Manual (gemini-3-flash-preview)                                         │\n');
+              write('│   2. Auto                                                                    │\n');
+              write('│ Model usage                                                                  │\n');
+              write('│ Flash           ▬                                      7% Resets: 1:29 PM    │\n');
+              write('│ Press Esc to close                                                           │\n');
+              write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+              setTimeout(() => {
+                modelPanelClosed = true;
+                writePrompt();
+              }, 90);
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              write('\nWorking on it\n> ');
+            }
+          }
+
+          if (startsOnFlash && clearSeen && statsSeen && modelPanelSeen && modelPanelClosed && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(startsOnFlash ? 0 : 2), 7000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-pro-preview,gemini-3-flash-preview"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "450"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(9)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(launches, [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("direct model switch to gemini-3-flash-preview was not confirmed; visible model is gemini-3-pro-preview"), stderr)
+        XCTAssertTrue(stderr.contains("relaunching directly on gemini-3-flash-preview"), stderr)
+        XCTAssertTrue(stderr.contains("Launching model: gemini-3-flash-preview"), stderr)
+        XCTAssertTrue(stderr.contains("Startup session stats: captured"), stderr)
+        XCTAssertTrue(stderr.contains("Startup model capacity: captured"), stderr)
+        XCTAssertTrue(stderr.contains("Auto-sending initial prompt"), stderr)
+        XCTAssertFalse(stderr.contains("[fatal]"), stderr)
+        XCTAssertTrue(commands.contains("__SIGINT__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(Array(commands.suffix(4)), [
+            "/clear",
+            "/stats",
+            "/model",
+            "Ship beta now"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerRelaunchesBlockedUsageLimitEndToEnd() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        const fallbackLaunch = launchModel === 'gemini-2.5-flash';
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, launchModel + ':' + line + '\n');
+        }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + launchModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write(launchModel + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('Select Model\n');
+              write('Manual (' + launchModel + ')\n');
+              write('Model usage\n');
+              write('Flash           24% Resets: 1:29 PM\n');
+              write('Press Esc to close\n');
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              if (fallbackLaunch) {
+                write('\nWorking on fallback\n> ');
+              } else {
+                write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+              }
+            }
+          }
+
+          if (fallbackLaunch && clearSeen && statsSeen && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(fallbackLaunch ? 0 : 3), 7000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-3-pro-preview,gemini-2.5-flash"
+        environment["MODEL_SWITCH_MODE"] = "manage"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "450"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(16)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(launches, [
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview (usage limit screen has no Stop option) — restarting on gemini-2.5-flash"), stderr)
+        XCTAssertTrue(stderr.contains("Launching model: gemini-2.5-flash"), stderr)
+        XCTAssertTrue(stderr.contains("Auto-sending initial prompt"), stderr)
+        XCTAssertFalse(stderr.contains("queueing /stats session and /model manage for gemini-2.5-flash"), stderr)
+        XCTAssertTrue(commands.contains("gemini-2.5-flash:Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerSwitchesModelWhenUsageLimitReturnsToPrompt() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        let activeModel = launchModel;
+        let modelPanelOpen = false;
+        let promptAttempts = 0;
+        let switched = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) { process.stdout.write(text); }
+        function logCommand(line) { fs.appendFileSync(logPath, activeModel + ':' + line + '\n'); }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + activeModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const raw = String(data || '');
+          if (modelPanelOpen && raw.includes('\u001B')) {
+            modelPanelOpen = false;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              writePrompt();
+            } else if (command === '/stats') {
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write(activeModel + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              modelPanelOpen = true;
+              write('Select Model\n');
+              write('Manual (' + activeModel + ')\n');
+              write('Model usage\n');
+              write(activeModel + ' 24% Resets: 1:29 PM\n');
+              write('Press Esc to close\n');
+            } else if (command === 'Ship beta now') {
+              promptAttempts += 1;
+              if (activeModel === 'gemini-3-flash-preview') {
+                write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+                for (let index = 0; index < 260; index += 1) {
+                  write('redraw frame ' + index + '\n');
+                }
+                writePrompt();
+              } else {
+                write('\nWorking on fallback\n');
+                writePrompt();
+              }
+            } else if (command === '/model set gemini-2.5-flash') {
+              activeModel = 'gemini-2.5-flash';
+              switched = true;
+              write('\nModel set to gemini-2.5-flash\n');
+              writePrompt();
+            }
+          }
+
+          if (switched && promptAttempts >= 2) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(switched && promptAttempts >= 2 ? 0 : 3), 8000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-2.5-flash"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "650"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(9)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(launches, ["gemini-3-flash-preview"], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/model set gemini-2.5-flash"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-2.5-flash:Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview — queueing in-session switch to gemini-2.5-flash."), stderr)
+        XCTAssertFalse(commands.contains("gemini-3-flash-preview:/model set gemini-3-pro-preview"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(stderr.contains("queueing in-session switch to gemini-3-pro-preview"), stderr)
+        XCTAssertFalse(stderr.contains("usage limit screen has no Stop option"), stderr)
+        XCTAssertFalse(stderr.contains("restarting on gemini-2.5-flash"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerClearsStaleContinueBeforeUsageLimitModelSwitch() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        let activeModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : 'gemini-3-flash-preview';
+        let inputBuffer = '';
+        let switched = false;
+
+        function write(text) { process.stdout.write(text); }
+        function logCommand(line) { fs.appendFileSync(logPath, activeModel + ':' + line + '\n'); }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + activeModel + '     ...\n');
+        }
+
+        function writePrompt(text = inputBuffer) {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          if (text.includes('\n')) {
+            const lines = text.split('\n');
+            write('> ' + lines[0] + '\n');
+            for (const line of lines.slice(1)) {
+              write('  ' + line + '\n');
+            }
+          } else {
+            write('> ' + text);
+          }
+        }
+
+        function submit(command) {
+          if (!command) return;
+          logCommand(command);
+          if (command === '/clear') {
+            writePrompt('');
+          } else if (command === '/stats') {
+            write('Session Stats\nSession ID: stale-continue-usage-limit\nModel Usage\n');
+            write(activeModel + '          1            0            0             0\n');
+            writePrompt('');
+          } else if (command === '/model') {
+            write('Select Model\nManual (' + activeModel + ')\nModel usage\n');
+            write(activeModel + ' 24% Resets: 1:29 PM\nPress Esc to close\n');
+          } else if (command === 'Ship beta now') {
+            if (activeModel === 'gemini-3-flash-preview') {
+              write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 23h23m59s.]\n');
+              inputBuffer = 'continue\ncontinue\ncontinue';
+              writePrompt(inputBuffer);
+            } else {
+              write('\nWorking on fallback\n');
+              writePrompt('');
+            }
+          } else if (command === '/model set gemini-2.5-flash') {
+            activeModel = 'gemini-2.5-flash';
+            switched = true;
+            write('\nModel set to gemini-2.5-flash\n');
+            writePrompt('');
+            setTimeout(() => process.exit(0), 80);
+          } else if (command.includes('continue') && command.includes('/model set')) {
+            logCommand('__APPENDED_MODEL_SWITCH__');
+            setTimeout(() => process.exit(8), 40);
+          }
+        }
+
+        process.on('SIGINT', () => {
+          inputBuffer = '';
+          logCommand('__SIGINT__');
+          writePrompt('');
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt('');
+        if (activeModel === 'gemini-2.5-flash') {
+          setTimeout(() => process.exit(0), 500);
+        }
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const char of String(data || '')) {
+            if (char === '\u0015') {
+              inputBuffer = '';
+              logCommand('__CTRL_U__');
+              writePrompt('');
+            } else if (char === '\u001B') {
+              logCommand('__ESC__');
+            } else if (char === '\r' || char === '\n') {
+              const command = inputBuffer.trim();
+              inputBuffer = '';
+              submit(command);
+            } else if (char >= ' ') {
+              inputBuffer += char;
+              writePrompt(inputBuffer);
+            }
+          }
+
+          if (switched) setTimeout(() => process.exit(0), 80);
+        });
+
+        setTimeout(() => process.exit(switched ? 0 : 5), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-2.5-flash"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "always"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "650"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(10)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:__CTRL_U__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/model set gemini-2.5-flash"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertFalse(commands.contains { $0.contains("__APPENDED_MODEL_SWITCH__") }, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview"), stderr)
+        XCTAssertTrue(stderr.contains("queueing in-session switch to gemini-2.5-flash"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerStopsUsageLimitDialogBeforeSwitchingModel() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        let activeModel = launchModel;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let promptSeen = false;
+        let usageLimitOpen = false;
+        let stopSeen = false;
+        let switchSeen = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, activeModel + ':' + line + '\n');
+        }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + activeModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function writeUsageLimitDialog() {
+          usageLimitOpen = true;
+          write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Usage limit reached for ' + activeModel + '.                              │\n');
+          write('│ Access resets at 12:53 PM GMT+2.                                             │\n');
+          write('│ /stats model for usage details                                               │\n');
+          write('│ /model to switch models.                                                     │\n');
+          write('│ /auth to switch to API key.                                                  │\n');
+          write('│ ● 1. Keep trying                                                             │\n');
+          write('\nℹ Request cancelled.\n\n');
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Usage limit reached for ' + activeModel + '.                              │\n');
+          write('│ Access resets at 12:53 PM GMT+2.                                             │\n');
+          write('│ /stats model for usage details                                               │\n');
+          write('│ /model to switch models.                                                     │\n');
+          write('│ /auth to switch to API key.                                                  │\n');
+          write('│   1. Keep trying                                                             │\n');
+          write('│ ● 2. Stop                                                                    │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const raw = String(data || '');
+          if (modelPanelSeen && raw.includes('\u001B')) {
+            modelPanelSeen = false;
+            writePrompt();
+          }
+
+          if (usageLimitOpen && raw.includes('\r') && normalizeCommand(data).length === 0) {
+            stopSeen = true;
+            usageLimitOpen = false;
+            logCommand('__ENTER__');
+            write('\nRequest cancelled.\n');
+            writePrompt();
+            return;
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write(activeModel + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('Select Model\n');
+              write('Manual (' + activeModel + ')\n');
+              write('Model usage\n');
+              write('Flash           24% Resets: 1:29 PM\n');
+              write('Press Esc to close\n');
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              writeUsageLimitDialog();
+            } else if (command === '/model set gemini-2.5-flash') {
+              activeModel = 'gemini-2.5-flash';
+              switchSeen = true;
+              writePrompt();
+            }
+          }
+
+          if (clearSeen && statsSeen && promptSeen && stopSeen && switchSeen) {
+            setTimeout(() => process.exit(0), 900);
+          }
+        });
+
+        setTimeout(() => process.exit(switchSeen && stopSeen ? 0 : 3), 8000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+
+        for flavor in ["stable", "preview", "nightly"] {
+            let runDirectory = tempDirectory.appendingPathComponent(flavor, isDirectory: true)
+            let commandLogURL = runDirectory.appendingPathComponent("commands.log")
+            let launchLogURL = runDirectory.appendingPathComponent("launches.log")
+            let isoHomeURL = runDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+            try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
+            try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+            try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: nodePath)
+            process.arguments = [try bundledGeminiAutomationRunnerPath()]
+            process.currentDirectoryURL = runDirectory
+
+            var environment = ProcessInfo.processInfo.environment
+            environment["CLI_FLAVOR"] = flavor
+            environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+            environment["WRAPPER_LAUNCH_MODE"] = "direct"
+            environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-2.5-flash"
+            environment["MODEL_SWITCH_MODE"] = "set"
+            environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+            environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+            environment["NEVER_SWITCH"] = "1"
+            environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+            environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+            environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+            environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+            environment["MENU_CONFIRM_MIN_MS"] = "20"
+            environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+            environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+            environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+            environment["QUICK_RECHECK_MS"] = "40"
+            environment["STATIC_RECHECK_MS"] = "60"
+            environment["ACTION_RETRY_MIN_MS"] = "20"
+            environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "650"
+            environment["FORCE_KILL_AFTER_MS"] = "200"
+            environment["RAW_TAIL_MAX"] = "24000"
+            environment["NORMALIZED_TAIL_MAX"] = "16000"
+            environment["SCREEN_CAPTURE_LINES"] = "80"
+            process.environment = environment
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            try process.run()
+            let deadline = Date().addingTimeInterval(12)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                process.terminate()
+            }
+            process.waitUntilExit()
+
+            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+            let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+
+            XCTAssertEqual(process.terminationStatus, 0, "flavor: \(flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertEqual(launches, ["gemini-3-flash-preview"], "flavor: \(flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            let stopIndex = try XCTUnwrap(commands.firstIndex(of: "gemini-3-flash-preview:__ENTER__"), "flavor: \(flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            let switchIndex = try XCTUnwrap(commands.firstIndex(of: "gemini-3-flash-preview:/model set gemini-2.5-flash"), "flavor: \(flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertLessThan(stopIndex, switchIndex, "flavor: \(flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Flavor: \(flavor)"), "flavor: \(flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Auto-continue mode: prompt_only"), "flavor: \(flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview — selecting Stop before switching models."), "flavor: \(flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview — queueing in-session switch to gemini-2.5-flash."), "flavor: \(flavor)\nstderr:\n\(stderr)")
+            XCTAssertFalse(stderr.contains("usage limit screen has no Stop option"), "flavor: \(flavor)\nstderr:\n\(stderr)")
+            XCTAssertFalse(stderr.contains("restarting on gemini-2.5-flash"), "flavor: \(flavor)\nstderr:\n\(stderr)")
+        }
+    }
+
+    func testBundledGeminiAutomationRunnerSelectsStartupAutoModelMenuBeforePrompt() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        const expectedAutoOption = process.env.FAKE_EXPECTED_AUTO_OPTION || '1';
+        let autoSelected = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function statusModel() {
+          return autoSelected ? 'auto' : 'gemini-3-flash-preview';
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          geet       no sandbox    ' + statusModel() + '     ...\n');
+          write('> ');
+        }
+
+        function writeAutoModelMenu() {
+          write('Select your Gemini CLI model.\n');
+          write('  1. Auto (Gemini 3)\n');
+          write('     Let Gemini CLI decide the best model for the task: gemini-3-pro-preview, gemini-3-flash-preview\n');
+          write('  2. Auto (Gemini 2.5)\n');
+          write('     Let Gemini CLI decide the best model for the task: gemini-2.5-pro, gemini-2.5-flash\n');
+          write('● 3. Manual (gemini-3-flash-preview)\n');
+          write('     Manually select a model\n');
+          write('Remember model for future sessions\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.39.0\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              writePrompt();
+            } else if (command === '/stats') {
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('gemini-3-flash-preview          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              writeAutoModelMenu();
+            } else if (command === expectedAutoOption) {
+              autoSelected = true;
+              writePrompt();
+            } else if (/^[12]$/.test(command)) {
+              write('\nUnexpected auto option ' + command + '\n');
+              setTimeout(() => process.exit(5), 120);
+            } else if (command === 'lint apps and fix issues') {
+              write(autoSelected ? '\nWorking in auto mode\n' : '\nStill manual\n');
+              setTimeout(() => process.exit(autoSelected ? 0 : 4), 120);
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(autoSelected ? 0 : 3), 9000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+
+        let cases = [
+            (flavor: "stable", chain: "gemini-2.5-flash,gemini-2.5-flash-lite", option: "2", label: "Auto (Gemini 2.5)"),
+            (flavor: "preview", chain: "gemini-3-pro-preview,gemini-3-flash-preview,gemini-2.5-flash", option: "1", label: "Auto (Gemini 3)"),
+            (flavor: "nightly", chain: "gemini-3-flash-preview,gemini-2.5-flash", option: "1", label: "Auto (Gemini 3)"),
+        ]
+
+        for testCase in cases {
+            try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+            try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: nodePath)
+            process.arguments = [try bundledGeminiAutomationRunnerPath()]
+            process.currentDirectoryURL = tempDirectory
+
+            var environment = ProcessInfo.processInfo.environment
+            environment["CLI_FLAVOR"] = testCase.flavor
+            environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+            environment["WRAPPER_LAUNCH_MODE"] = "direct"
+            environment["MODEL_CHAIN"] = testCase.chain
+            environment["GEMINI_MODEL_AUTO"] = "1"
+            environment["GEMINI_AUTO_MODEL"] = "auto"
+            environment["GEMINI_INITIAL_PROMPT"] = "lint apps and fix issues"
+            environment["AUTO_CONTINUE_MODE"] = "always"
+            environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+            environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+            environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+            environment["FAKE_EXPECTED_AUTO_OPTION"] = testCase.option
+            environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+            environment["PROMPT_SUBMIT_DELAY_MS"] = "20"
+            environment["MENU_CONFIRM_MIN_MS"] = "20"
+            environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+            environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+            environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+            environment["QUICK_RECHECK_MS"] = "40"
+            environment["STATIC_RECHECK_MS"] = "60"
+            environment["ACTION_RETRY_MIN_MS"] = "20"
+            environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "900"
+            environment["FORCE_KILL_AFTER_MS"] = "200"
+            environment["RAW_TAIL_MAX"] = "24000"
+            environment["NORMALIZED_TAIL_MAX"] = "16000"
+            environment["SCREEN_CAPTURE_LINES"] = "80"
+            process.environment = environment
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            try process.run()
+            let deadline = Date().addingTimeInterval(11)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                process.terminate()
+            }
+            process.waitUntilExit()
+
+            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+            let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+
+            XCTAssertEqual(process.terminationStatus, 0, "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertEqual(launches, ["auto"], "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            let modelCommandIndex = try XCTUnwrap(commands.firstIndex(of: "/model"), "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            let autoSelectionIndex = try XCTUnwrap(commands.firstIndex(of: testCase.option), "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            let promptIndex = try XCTUnwrap(commands.firstIndex(of: "lint apps and fix issues"), "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertLessThan(modelCommandIndex, autoSelectionIndex, "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertLessThan(autoSelectionIndex, promptIndex, "flavor: \(testCase.flavor)\nstdout:\n\(stdout)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Flavor: \(testCase.flavor)"), "flavor: \(testCase.flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Launching model: Gemini CLI auto"), "flavor: \(testCase.flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Startup auto model: selecting \(testCase.label) from /model."), "flavor: \(testCase.flavor)\nstderr:\n\(stderr)")
+            XCTAssertTrue(stderr.contains("Startup auto model: selected \(testCase.label); continuing startup."), "flavor: \(testCase.flavor)\nstderr:\n\(stderr)")
+        }
+    }
+
+    func testBundledGeminiAutomationRunnerSelectsCapacityModelAndRetriesPromptAfterUsageLimitStop() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        let activeModel = launchModel;
+        let usageLimitOpen = false;
+        let panelMode = '';
+        let promptCount = 0;
+        let switched = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, activeModel + ':' + line + '\n');
+        }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + activeModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function writeUsageLimitDialog() {
+          usageLimitOpen = true;
+          write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 20h35m20s.]\n');
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Usage limit reached for ' + activeModel + '.                              │\n');
+          write('│ /stats model for usage details                                               │\n');
+          write('│ /model to switch models.                                                     │\n');
+          write('│   1. Keep trying                                                             │\n');
+          write('│ ● 2. Stop                                                                    │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function writeStartupModelPanel() {
+          panelMode = 'startup';
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Select Model                                                                 │\n');
+          write('│ Manual (' + activeModel + ')                                                  │\n');
+          write('│ Model usage                                                                  │\n');
+          write('│ gemini-3-flash-preview 24% Resets: 1:29 PM                                   │\n');
+          write('│ gemini-2.5-flash 100% Resets: 1:29 PM                                        │\n');
+          write('│ gemini-2.5-flash-lite 24% Resets: 1:29 PM                                    │\n');
+          write('│ Press Esc to close                                                           │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function writeModelManagePanel() {
+          panelMode = 'model-manage';
+          write('╭──────────────────────────────────────────────────────────────────────────────╮\n');
+          write('│ Select Model                                                                 │\n');
+          write('│ Model usage                                                                  │\n');
+          write('│   1. gemini-2.5-flash 100% Resets: 1:29 PM                                  │\n');
+          write('│ ● 2. gemini-2.5-flash-lite 24% Resets: 1:29 PM                              │\n');
+          write('╰──────────────────────────────────────────────────────────────────────────────╯\n');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.41.0-nightly.20260423.gd1c91f526\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          const raw = String(data || '');
+          const commands = normalizeCommand(data);
+
+          if (usageLimitOpen && raw.includes('\r') && commands.length === 0) {
+            usageLimitOpen = false;
+            logCommand('__STOP_ENTER__');
+            write('\nRequest cancelled.\n');
+            writePrompt();
+            return;
+          }
+
+          if (panelMode === 'startup' && raw.includes('\u001B')) {
+            panelMode = '';
+            writePrompt();
+            return;
+          }
+
+          if (panelMode === 'model-manage' && commands.includes('2')) {
+            logCommand('2');
+            activeModel = 'gemini-2.5-flash-lite';
+            switched = true;
+            panelMode = '';
+            writePrompt();
+            return;
+          }
+
+          if (panelMode === 'model-manage' && raw.includes('\r') && commands.length === 0) {
+            logCommand('__MODEL_ENTER__');
+            activeModel = 'gemini-2.5-flash-lite';
+            switched = true;
+            panelMode = '';
+            writePrompt();
+            return;
+          }
+
+          for (const command of commands) {
+            logCommand(command);
+            if (command === '/clear') {
+              writePrompt();
+            } else if (command === '/stats' || command === '/stats session') {
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write(activeModel + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              writeStartupModelPanel();
+            } else if (command === '/model manage') {
+              writeModelManagePanel();
+            } else if (command === 'Ship beta now') {
+              promptCount += 1;
+              if (switched) {
+                write('\nWorking on fallback model\n');
+                setTimeout(() => process.exit(0), 120);
+              } else {
+                writeUsageLimitDialog();
+              }
+            }
+          }
+        });
+
+        setTimeout(() => process.exit(switched && promptCount >= 2 ? 0 : 3), 14000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "nightly"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview,gemini-2.5-flash,gemini-2.5-flash-lite"
+        environment["MODEL_SWITCH_MODE"] = "manage"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "prompt_only"
+        environment["NEVER_SWITCH"] = "1"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["PROMPT_SUBMIT_DELAY_MS"] = "20"
+        environment["MENU_CONFIRM_MIN_MS"] = "20"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "900"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(16)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(launches, ["gemini-3-flash-preview"], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:__STOP_ENTER__"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/stats session"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-flash-preview:/model manage"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(
+            commands.contains("gemini-3-flash-preview:2") || commands.contains("gemini-3-flash-preview:__MODEL_ENTER__"),
+            "stdout:\n\(stdout)\nstderr:\n\(stderr)"
+        )
+        XCTAssertTrue(commands.contains("gemini-2.5-flash-lite:Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("gemini-2.5-flash is at 100% usage; selecting gemini-2.5-flash-lite instead"), stderr)
+        XCTAssertTrue(stderr.contains("Model switch confirmed: gemini-2.5-flash-lite"), stderr)
+        XCTAssertTrue(stderr.contains("Usage-limit recovery: retrying initial prompt on gemini-2.5-flash-lite"), stderr)
+    }
+
+    func testBundledGeminiAutomationRunnerQueuesAuthWhenModelChainIsExhausted() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        const previousLaunches = fs.existsSync(launchLogPath)
+          ? fs.readFileSync(launchLogPath, 'utf8').split('\n').filter(Boolean)
+          : [];
+        const launchOrdinal = previousLaunches.length + 1;
+        let clearSeen = false;
+        let statsCount = 0;
+        let modelCount = 0;
+        let modelPanelOpen = false;
+        let promptSeen = false;
+        let authSeen = false;
+        let restartSeen = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, line + '\n');
+        }
+
+        function writeStatusRow() {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + launchModel + '     ...\n');
+        }
+
+        function writePrompt() {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow();
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelOpen && String(data).includes('\u001B')) {
+            modelPanelOpen = false;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsCount += 1;
+              write('Session Stats\n');
+              write('Session ID: smoke-session-' + statsCount + '\n');
+              write('Auth Method: Signed in with Google (' + (restartSeen ? 'new@example.com' : 'smoke@example.com') + ')\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Tool Calls: 0\n');
+              write('Wall Time: 1s\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write(launchModel + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              modelCount += 1;
+              modelPanelOpen = true;
+              write('Select Model\n');
+              write('Manual (' + launchModel + ')\n');
+              write('Model usage\n');
+              write('Flash           ' + (restartSeen ? '24%' : '100%') + ' Resets: 1:29 PM\n');
+              write('Press Esc to close\n');
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+              writeStatusRow();
+              write('> ');
+            } else if (command === '/auth') {
+              authSeen = true;
+              write('\nWaiting for auth...\n');
+              setTimeout(() => {
+                write('\nAuthentication succeeded\n');
+                write("You've successfully signed in with Google. Gemini CLI needs to be restarted.\n");
+                write('Press R to restart, or Esc to choose a different authentication method.\n');
+              }, 80);
+            } else if (command === 'r' || command === 'R') {
+              restartSeen = true;
+              write('\nRestarting Gemini CLI...\n');
+              write('Signed in with Google /auth\n');
+              writePrompt();
+            }
+          }
+
+          const sameProcessRestartComplete = clearSeen && statsCount >= 2 && modelCount >= 2 && promptSeen && authSeen && restartSeen && !modelPanelOpen;
+          const relaunchTelemetryComplete = launchOrdinal > 1 && statsCount >= 1 && modelCount >= 1 && !modelPanelOpen;
+          if (sameProcessRestartComplete || relaunchTelemetryComplete) {
+            setTimeout(() => process.exit(0), 500);
+          }
+        });
+
+        setTimeout(() => process.exit(restartSeen && statsCount >= 2 && modelCount >= 2 ? 0 : 3), 14000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-flash-preview"
+        environment["MODEL_CHAIN_EXHAUSTED_ACTION"] = "auth"
+        environment["MODEL_SWITCH_MODE"] = "manage"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "always"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "450"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(16)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+	        XCTAssertTrue(
+	            launches == ["gemini-3-flash-preview"] || launches == ["gemini-3-flash-preview", "gemini-3-flash-preview"],
+	            "stdout:\n\(stdout)\nstderr:\n\(stderr)"
+	        )
+        XCTAssertTrue(stderr.contains("Startup model capacity shows gemini-3-flash-preview is at 100% usage — no fallback models remain. Queueing /auth"), stderr)
+        XCTAssertTrue(stderr.contains("Authentication handoff started with /auth. Waiting for account change completion."), stderr)
+        XCTAssertTrue(stderr.contains("Account change detected: authentication succeeded; restarting Gemini CLI without startup /clear."), stderr)
+        XCTAssertTrue(stderr.contains("Account change telemetry: running /stats -> /model without startup /clear."), stderr)
+        XCTAssertTrue(stderr.contains("Account change telemetry: captured refreshed /stats and /model capacity; startup /clear was skipped."), stderr)
+        XCTAssertFalse(stderr.contains("Finishing session"), stderr)
+        XCTAssertEqual(commands, [
+            "/clear",
+            "/stats",
+            "/model",
+            "/auth",
+            "R",
+            "/stats",
+            "/model"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("/auth"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands.filter { $0 == "/clear" }.count, 1, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands.filter { $0 == "/stats" }.count, 2, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands.filter { $0 == "/model" }.count, 2, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(commands.filter { $0 == "Ship beta now" }.count, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+    }
+
+    func testBundledGeminiAutomationRunnerRelaunchesUsageLimitFromPendingSwitchedModelWhenStatusRowIsStale() throws {
+        let builder = CommandBuilder()
+        guard let nodePath = builder.resolveExecutable("node", workingDirectory: FileManager.default.currentDirectoryPath).resolved else {
+            throw XCTSkip("node is not available in this test environment.")
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fakeWrapperURL = tempDirectory.appendingPathComponent("fake-gemini.cjs")
+        let commandLogURL = tempDirectory.appendingPathComponent("commands.log")
+        let launchLogURL = tempDirectory.appendingPathComponent("launches.log")
+        let isoHomeURL = tempDirectory.appendingPathComponent("gemini-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let fakeWrapperSource = #"""
+        #!/usr/bin/env node
+        const fs = require('node:fs');
+        const logPath = process.env.FAKE_GEMINI_COMMAND_LOG;
+        const launchLogPath = process.env.FAKE_GEMINI_LAUNCH_LOG;
+        const modelArgIndex = process.argv.indexOf('--model');
+        const launchModel = modelArgIndex >= 0 ? process.argv[modelArgIndex + 1] : '';
+        const fallbackLaunch = launchModel === 'gemini-2.5-flash';
+        let switchedToFlash = false;
+        let staleStatusRow = false;
+        let clearSeen = false;
+        let statsSeen = false;
+        let modelPanelSeen = false;
+        let modelPanelClosed = false;
+        let promptSeen = false;
+
+        fs.appendFileSync(launchLogPath, launchModel + '\n');
+
+        function write(text) {
+          process.stdout.write(text);
+        }
+
+        function logCommand(line) {
+          fs.appendFileSync(logPath, launchModel + ':' + line + '\n');
+        }
+
+        function displayedModel() {
+          if (fallbackLaunch) return launchModel;
+          if (staleStatusRow) return 'gemini-3-pro-preview';
+          if (switchedToFlash) return 'gemini-3-flash-preview';
+          return launchModel || 'gemini-3-pro-preview';
+        }
+
+        function writeStatusRow(model = displayedModel()) {
+          write('workspace (/directory)     branch     sandbox       /model\n');
+          write('/tmp/clilauncher          main       no sandbox    ' + model + '     ...\n');
+        }
+
+        function writePrompt(model = displayedModel()) {
+          write('\n'.repeat(90));
+          write('? for shortcuts\n');
+          write('Type your message or @path/to/file\n');
+          writeStatusRow(model);
+          write('> ');
+        }
+
+        function normalizeCommand(data) {
+          return String(data || '')
+            .replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001B/g, '')
+            .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+        }
+
+        process.on('SIGINT', () => {
+          logCommand('__SIGINT__');
+          process.exit(130);
+        });
+
+        write('Gemini CLI v0.40.0-preview.2\n');
+        write('Signed in with Google /auth\n');
+        write('Plan: Gemini Code Assist for individuals /upgrade\n');
+        if (!fallbackLaunch) {
+          write('We are making changes to Gemini CLI that may impact your workflow.\n');
+          write('What is Changing: restricting models for free tier users.\n');
+          write('How it affects you: upgrade to a supported paid plan.\n');
+          write('Read more: https://goo.gle/geminicli-updates\n');
+        }
+        writePrompt();
+
+        process.stdin.setEncoding('utf8');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', (data) => {
+          if (modelPanelSeen && String(data).includes('\u001B')) {
+            modelPanelClosed = true;
+            writePrompt();
+          }
+
+          for (const command of normalizeCommand(data)) {
+            logCommand(command);
+            if (command === '/model set gemini-3-flash-preview') {
+              switchedToFlash = true;
+              staleStatusRow = true;
+              write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+              writeStatusRow('gemini-3-pro-preview');
+              write('> ');
+            } else if (command === '/clear') {
+              clearSeen = true;
+              writePrompt();
+            } else if (command === '/stats') {
+              statsSeen = true;
+              write('Session Stats\n');
+              write('Session ID: smoke-session\n');
+              write('Auth Method: Signed in with Google (smoke@example.com)\n');
+              write('Tier: Gemini Code Assist for individuals\n');
+              write('Model Usage\n');
+              write('Model                         Reqs Input Tokens Cache Reads Output Tokens\n');
+              write((fallbackLaunch ? launchModel : 'gemini-3-flash-preview') + '          1            0            0             0\n');
+              setTimeout(writePrompt, 80);
+            } else if (command === '/model') {
+              modelPanelSeen = true;
+              write('Select Model\n');
+              write('Manual (' + (fallbackLaunch ? launchModel : 'gemini-3-flash-preview') + ')\n');
+              write('Model usage\n');
+              write('Flash           24% Resets: 1:29 PM\n');
+              write('Press Esc to close\n');
+            } else if (command === 'Ship beta now') {
+              promptSeen = true;
+              if (fallbackLaunch) {
+                write('\nWorking on fallback\n> ');
+              } else {
+                write('\nX [API Error: You have exhausted your capacity on this model. Your quota will reset after 2h0m7s.]\n');
+                writeStatusRow('gemini-3-pro-preview');
+                write('> ');
+              }
+            }
+          }
+
+          if (fallbackLaunch && clearSeen && statsSeen && promptSeen) {
+            setTimeout(() => process.exit(0), 80);
+          }
+        });
+
+        setTimeout(() => process.exit(fallbackLaunch ? 0 : 3), 8000);
+        """#
+        try fakeWrapperSource.write(to: fakeWrapperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeWrapperURL.path)
+        try "".write(to: commandLogURL, atomically: true, encoding: .utf8)
+        try "".write(to: launchLogURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = [try bundledGeminiAutomationRunnerPath()]
+        process.currentDirectoryURL = tempDirectory
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLI_FLAVOR"] = "preview"
+        environment["GEMINI_WRAPPER"] = fakeWrapperURL.path
+        environment["WRAPPER_LAUNCH_MODE"] = "direct"
+        environment["MODEL_CHAIN"] = "gemini-3-pro-preview,gemini-3-flash-preview,gemini-2.5-flash"
+        environment["MODEL_SWITCH_MODE"] = "set"
+        environment["GEMINI_INITIAL_PROMPT"] = "Ship beta now"
+        environment["AUTO_CONTINUE_MODE"] = "always"
+        environment["GEMINI_ISO_HOME"] = isoHomeURL.path
+        environment["FAKE_GEMINI_COMMAND_LOG"] = commandLogURL.path
+        environment["FAKE_GEMINI_LAUNCH_LOG"] = launchLogURL.path
+        environment["PROMPT_COMMAND_SETTLE_MS"] = "120"
+        environment["INITIAL_PROMPT_SETTLE_MS"] = "100"
+        environment["INITIAL_PROMPT_RETRY_MS"] = "60"
+        environment["INITIAL_PROMPT_MAX_WAIT_MS"] = "1500"
+        environment["QUICK_RECHECK_MS"] = "40"
+        environment["STATIC_RECHECK_MS"] = "60"
+        environment["ACTION_RETRY_MIN_MS"] = "20"
+        environment["MODEL_MANAGE_FLOW_TIMEOUT_MS"] = "450"
+        environment["FORCE_KILL_AFTER_MS"] = "200"
+        environment["RAW_TAIL_MAX"] = "24000"
+        environment["NORMALIZED_TAIL_MAX"] = "16000"
+        environment["SCREEN_CAPTURE_LINES"] = "80"
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let deadline = Date().addingTimeInterval(10)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let commands = try String(contentsOf: commandLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let launches = try String(contentsOf: launchLogURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertEqual(launches, [
+            "gemini-3-pro-preview",
+            "gemini-2.5-flash"
+        ], "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-3-pro-preview:/model set gemini-3-flash-preview"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(commands.contains("gemini-2.5-flash:Ship beta now"), "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+        XCTAssertTrue(stderr.contains("Usage limit appeared while confirming gemini-3-flash-preview; treating that model as active for fallback."), stderr)
+	        XCTAssertTrue(stderr.contains("Usage limit reached on gemini-3-flash-preview — queueing in-session switch to gemini-2.5-flash."), stderr)
+	        XCTAssertTrue(stderr.contains("direct model switch to gemini-2.5-flash was not confirmed; visible model is gemini-3-pro-preview — relaunching directly on gemini-2.5-flash."), stderr)
+        XCTAssertFalse(stderr.contains("restarting on gemini-3-flash-preview"), stderr)
+        XCTAssertFalse(stderr.contains("queueing /stats session and /model manage for gemini-2.5-flash"), stderr)
+    }
+
     func testBundledGeminiAutomationRunnerDoesNotWrapModelChainWhenPolicyRestricted() throws {
         let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
         let chain = [
@@ -5137,7 +10834,7 @@ final class AiderCommandBuilderTests: XCTestCase {
             "gemini-3-flash-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash-lite"
         ]
         let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
         let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "[]"
@@ -5189,6 +10886,49 @@ final class AiderCommandBuilderTests: XCTestCase {
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshotData) as? [String: Any])
         XCTAssertEqual(payload["kind"] as? String, "model_manage_routing")
         XCTAssertEqual(payload["targetOptionText"] as? String, "3")
+    }
+
+    func testBundledGeminiAutomationRunnerResolvesStartupAutoMenuFromModelChainFamily() throws {
+        let runnerURLString = URL(fileURLWithPath: try bundledGeminiAutomationRunnerPath()).absoluteString
+        let sample = """
+        Select your Gemini CLI model.
+        1. Auto (Gemini 3)
+           Let Gemini CLI decide the best model for the task: gemini-3-pro-preview, gemini-3-flash-preview
+        2. Auto (Gemini 2.5)
+           Let Gemini CLI decide the best model for the task: gemini-2.5-pro, gemini-2.5-flash
+        ● 3. Manual (gemini-3-flash-preview)
+           Manually select a model
+        Remember model for future sessions
+        """
+        let encodedImportURL = String(data: try JSONEncoder().encode(runnerURLString), encoding: .utf8) ?? "\"\""
+        let encodedSample = String(data: try JSONEncoder().encode(sample), encoding: .utf8) ?? "\"\""
+
+        for (chain, expectedOption) in [
+            ("gemini-3-flash-preview,gemini-2.5-flash", "1"),
+            ("gemini-2.5-flash,gemini-2.5-flash-lite", "2"),
+        ] {
+            let encodedChain = String(data: try JSONEncoder().encode(chain), encoding: .utf8) ?? "\"\""
+            let script = """
+            process.env.GEMINI_MODEL_AUTO = '1';
+            process.env.GEMINI_AUTO_MODEL = 'auto';
+            process.env.MODEL_CHAIN = \(encodedChain);
+            import(\(encodedImportURL)).then((mod) => {
+              const snapshot = mod._test.detectSnapshotFromText(\(encodedSample), "sample");
+              const option = mod._test.resolveStartupAutoModelOption(snapshot);
+              process.stdout.write(JSON.stringify({ numberText: option?.numberText || '', canonical: option?.canonical || '' }));
+            }).catch((error) => {
+              console.error(error && error.stack ? error.stack : String(error));
+              process.exit(1);
+            });
+            """
+
+            let result = try runNodeScript(script)
+            XCTAssertEqual(result.terminationStatus, 0, result.stderr)
+
+            let payloadData = try XCTUnwrap(result.stdout.data(using: .utf8))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: payloadData) as? [String: Any])
+            XCTAssertEqual(payload["numberText"] as? String, expectedOption, "chain: \(chain)\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)")
+        }
     }
 
     func testBundledGeminiAutomationRunnerDetectsModelManageModelListMenu() throws {
@@ -5383,6 +11123,8 @@ final class AiderCommandBuilderTests: XCTestCase {
 
         let command = try builder.buildCommand(profile: profile, settings: settings)
 
+        XCTAssertTrue(command.contains("GEMINI_MODEL_AUTO='1'"))
+        XCTAssertTrue(command.contains("GEMINI_AUTO_MODEL='auto'"))
         XCTAssertTrue(command.contains("MODEL_CHAIN='gemini-2.5-pro,gemini-2.5-flash'"))
         XCTAssertTrue(command.contains("'/bin/echo' '/bin/echo'"))
         XCTAssertFalse(command.contains("--model 'gemini-2.5-pro'"))
@@ -5402,11 +11144,13 @@ final class AiderCommandBuilderTests: XCTestCase {
         profile.nodeExecutable = "/bin/echo"
         profile.geminiAutomationRunnerPath = "/bin/echo"
 
-        profile.configureGeminiFireAndForget(prompt: "Ship 'beta' now")
+        profile.configureGeminiFireAndForget(prompt: "Ship 'beta' now", supportingPrompt: "continue refactor")
         let command = try builder.buildCommand(profile: profile, settings: settings)
 
         XCTAssertTrue(command.contains("GEMINI_INITIAL_PROMPT='Ship '\\''beta'\\'' now'"))
         XCTAssertTrue(command.contains("AUTO_CONTINUE_MODE='always'"))
+        XCTAssertTrue(command.contains("CONTINUE_COMMAND='continue refactor'"))
+        XCTAssertTrue(command.contains("CONTINUE_FALLBACK_COMMAND='continue to next refactor'"))
         XCTAssertTrue(command.contains("'/bin/echo' '/bin/echo'"))
     }
 

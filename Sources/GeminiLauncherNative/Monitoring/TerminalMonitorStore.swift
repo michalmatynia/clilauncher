@@ -407,6 +407,19 @@ private struct GeminiSessionStatsFallbackNotice: Equatable, Sendable {
     }
 }
 
+private struct GeminiAccountChangeNotice: Equatable, Sendable {
+    var fingerprint: String
+    var message: String
+
+    var metadata: [String: Any] {
+        [
+            "source": "runner_banner",
+            "message": message,
+            "restart_without_startup_clear": true
+        ]
+    }
+}
+
 private struct GeminiStartupCommandMatch: Equatable, Sendable {
     var command: String
     var source: String
@@ -475,6 +488,7 @@ final class TerminalMonitorStore: ObservableObject {
     private var startupClearCompletedFingerprintsByID: [UUID: [String]] = [:]
     private var compatibilityOverrideFingerprintsByID: [UUID: [String]] = [:]
     private var freshSessionResetFingerprintsByID: [UUID: [String]] = [:]
+    private var accountChangeFingerprintsByID: [UUID: [String]] = [:]
     private var transcriptInteractionHistoryByID: [UUID: [String]] = [:]
     private var nextDetailRefreshAt: [UUID: Date] = [:]
     private var requestedDetailWorkloadsByID: [UUID: MonitorDetailLoadWorkload] = [:]
@@ -2439,6 +2453,7 @@ final class TerminalMonitorStore: ObservableObject {
         startupClearCompletedFingerprintsByID.removeValue(forKey: sessionID)
         compatibilityOverrideFingerprintsByID.removeValue(forKey: sessionID)
         freshSessionResetFingerprintsByID.removeValue(forKey: sessionID)
+        accountChangeFingerprintsByID.removeValue(forKey: sessionID)
         transcriptInteractionHistoryByID.removeValue(forKey: sessionID)
     }
 
@@ -2469,6 +2484,7 @@ final class TerminalMonitorStore: ObservableObject {
         let sessionStatsFallbackNotice = sessionStatsBuffer.flatMap { captureGeminiSessionStatsFallbackIfPresent(sessionID: sessionID, bufferedTranscriptText: $0) }
         let compatibilityOverrideNotice = sessionStatsBuffer.flatMap { captureGeminiCompatibilityOverrideIfPresent(sessionID: sessionID, bufferedTranscriptText: $0) }
         let freshSessionResetNotice = sessionStatsBuffer.flatMap { captureGeminiFreshSessionResetIfPresent(sessionID: sessionID, bufferedTranscriptText: $0) }
+        let accountChangeNotice = sessionStatsBuffer.flatMap { captureGeminiAccountChangeIfPresent(sessionID: sessionID, bufferedTranscriptText: $0) }
         let transcriptInteractionNotices = sessionStatsBuffer.map { captureGeminiTranscriptInteractionsIfPresent(sessionID: sessionID, bufferedTranscriptText: $0) } ?? []
         if let launchContextNotice {
             session = Self.sessionByApplyingGeminiLaunchContext(launchContextNotice.snapshot, to: session)
@@ -2533,6 +2549,10 @@ final class TerminalMonitorStore: ObservableObject {
             session.lastDatabaseMessage = settings.enableMongoWrites
                 ? "Prepared fresh Gemini workspace session; syncing transcript chunk \(session.chunkCount)."
                 : "Prepared fresh Gemini workspace session locally (\(freshSessionResetNotice.reason))."
+        } else if accountChangeNotice != nil {
+            session.lastDatabaseMessage = settings.enableMongoWrites
+                ? "Detected Gemini account change; syncing transcript chunk \(session.chunkCount)."
+                : "Detected Gemini account change locally."
         } else {
             session.lastDatabaseMessage = settings.enableMongoWrites
                 ? "Chunk \(session.chunkCount) queued for MongoDB."
@@ -2576,6 +2596,8 @@ final class TerminalMonitorStore: ObservableObject {
                 syncedSession.lastDatabaseMessage = "Recorded Gemini CLI compatibility override and synced chunk \(syncedSession.chunkCount) to MongoDB."
             } else if freshSessionResetNotice != nil {
                 syncedSession.lastDatabaseMessage = "Recorded Gemini fresh-session preparation and synced chunk \(syncedSession.chunkCount) to MongoDB."
+            } else if accountChangeNotice != nil {
+                syncedSession.lastDatabaseMessage = "Recorded Gemini account change and synced chunk \(syncedSession.chunkCount) to MongoDB."
             } else {
                 syncedSession.lastDatabaseMessage = "Synced chunk \(syncedSession.chunkCount) to MongoDB."
             }
@@ -2720,6 +2742,19 @@ final class TerminalMonitorStore: ObservableObject {
                     statusReason: syncedSession.statusReason,
                     exitCode: syncedSession.exitCode,
                     metadata: freshSessionResetNotice.metadata,
+                    settings: settings
+                )
+            }
+            if let accountChangeNotice {
+                try await writer.recordStatus(
+                    session: syncedSession,
+                    status: syncedSession.status,
+                    eventType: "gemini_account_changed",
+                    message: "Detected Gemini account change; restarting CLI without startup clear.",
+                    eventAt: timestamp,
+                    statusReason: syncedSession.statusReason,
+                    exitCode: syncedSession.exitCode,
+                    metadata: accountChangeNotice.metadata,
                     settings: settings
                 )
             }
@@ -4332,6 +4367,10 @@ final class TerminalMonitorStore: ObservableObject {
         extractGeminiSessionStatsFallbackNotices(fromTranscriptText: text).last?.toCommand
     }
 
+    nonisolated static func extractGeminiAccountChangeDetected(fromTranscriptText text: String) -> Bool {
+        !extractGeminiAccountChangeNotices(fromTranscriptText: text).isEmpty
+    }
+
     nonisolated static func sessionByApplyingGeminiSessionStats(
         _ snapshot: GeminiSessionStatsSnapshot,
         to session: TerminalMonitorSession
@@ -4956,6 +4995,25 @@ final class TerminalMonitorStore: ObservableObject {
         return latestNotice
     }
 
+    private func captureGeminiAccountChangeIfPresent(sessionID: UUID, bufferedTranscriptText: String) -> GeminiAccountChangeNotice? {
+        let notices = Self.extractGeminiAccountChangeNotices(fromTranscriptText: bufferedTranscriptText)
+        guard !notices.isEmpty else { return nil }
+
+        var fingerprints = accountChangeFingerprintsByID[sessionID] ?? []
+        var latestNotice: GeminiAccountChangeNotice?
+
+        for notice in notices where !fingerprints.contains(notice.fingerprint) {
+            fingerprints.append(notice.fingerprint)
+            if fingerprints.count > Self.sessionStatsFingerprintLimit {
+                fingerprints.removeFirst(fingerprints.count - Self.sessionStatsFingerprintLimit)
+            }
+            latestNotice = notice
+        }
+
+        accountChangeFingerprintsByID[sessionID] = fingerprints
+        return latestNotice
+    }
+
     func captureGeminiTranscriptInteractionsIfPresent(
         sessionID: UUID,
         bufferedTranscriptText: String
@@ -5216,7 +5274,7 @@ final class TerminalMonitorStore: ObservableObject {
 
         var searchRange = normalizedText.startIndex..<normalizedText.endIndex
 
-        while let match = ["Startup sequence: blocked", "Startup session stats: blocked"]
+        while let match = ["Startup sequence: blocked", "Startup session stats: blocked", "Startup session stats: unavailable"]
             .compactMap({ marker -> Range<String.Index>? in
                 normalizedText.range(of: marker, options: [.caseInsensitive], range: searchRange)
             })
@@ -5284,6 +5342,41 @@ final class TerminalMonitorStore: ObservableObject {
                     toCommand: toCommand
                 )
             )
+        }
+
+        return notices
+    }
+
+    nonisolated private static func extractGeminiAccountChangeNotices(fromTranscriptText text: String) -> [GeminiAccountChangeNotice] {
+        let normalizedText = normalizedSessionStatsParsingText(from: text)
+        guard !normalizedText.isEmpty else { return [] }
+
+        let markers = [
+            "Account change detected: authentication succeeded; restarting Gemini CLI without startup /clear.",
+            "Account change telemetry: running /stats -> /model without startup /clear.",
+            "Account change telemetry: captured refreshed /stats and /model capacity; startup /clear was skipped."
+        ]
+
+        var notices: [GeminiAccountChangeNotice] = []
+        var seenFingerprints = Set<String>()
+
+        for marker in markers {
+            var searchRange = normalizedText.startIndex..<normalizedText.endIndex
+            while let range = normalizedText.range(of: marker, options: [.caseInsensitive], range: searchRange) {
+                let message = normalizedText[range]
+                    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let fingerprint = message.lowercased()
+                if seenFingerprints.insert(fingerprint).inserted {
+                    notices.append(
+                        GeminiAccountChangeNotice(
+                            fingerprint: fingerprint,
+                            message: message
+                        )
+                    )
+                }
+                searchRange = range.upperBound..<normalizedText.endIndex
+            }
         }
 
         return notices

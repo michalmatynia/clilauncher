@@ -74,6 +74,30 @@ enum GeminiModelMode: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum GeminiModelChainExhaustedAction: String, CaseIterable, Codable, Identifiable, Sendable {
+    case auth
+    case keepOpen = "keep_open"
+    case finish
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auth: return "Offer /auth"
+        case .keepOpen: return "Keep open"
+        case .finish: return "Finish session"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .auth: return "Queue /auth so you can sign in with another account when the model chain is exhausted."
+        case .keepOpen: return "Pause automation and leave Gemini open for manual recovery."
+        case .finish: return "Use the previous behavior and finish the launcher session."
+        }
+    }
+}
+
 enum LaunchBehaviorPreset: String, CaseIterable, Codable, Identifiable {
     case safe
     case balanced
@@ -120,6 +144,9 @@ enum WorkspaceCompanionApp: String, CaseIterable, Codable, Identifiable, Sendabl
 }
 
 struct LaunchProfile: Codable, Identifiable, Equatable {
+    static let defaultGeminiSupportingPrompt = "continue"
+    static let defaultGeminiRecoveryPrompt = "continue to next refactor"
+
     var id = UUID()
     var name: String = "New Profile"
     var isFavorite: Bool = false
@@ -152,9 +179,12 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     var geminiModelChain: String = GeminiFlavor.preview.defaultModelChain
     var geminiFlavorDefaultsVersion: Int = GeminiFlavor.preview.defaultsVersion
     var geminiInitialPrompt: String = ""
+    var geminiSupportingPrompt: String = Self.defaultGeminiSupportingPrompt
+    var geminiRecoveryPrompt: String = Self.defaultGeminiRecoveryPrompt
     var geminiResumeLatest: Bool = true
     var geminiKeepTryMax: Int = 25
     var geminiAutoContinueMode: AutoContinueMode = .promptOnly
+    var geminiModelChainExhaustedAction: GeminiModelChainExhaustedAction = .auth
     var geminiAutoAllowSessionPermissions: Bool = true
     var geminiAutomationEnabled: Bool = true
     var geminiNeverSwitch: Bool = false
@@ -236,6 +266,14 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         shellBootstrapCommand.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    var effectiveGeminiSupportingPrompt: String {
+        Self.resolvedGeminiSupportingPrompt(geminiSupportingPrompt)
+    }
+
+    var effectiveGeminiRecoveryPrompt: String {
+        Self.resolvedGeminiRecoveryPrompt(geminiRecoveryPrompt)
+    }
+
     var trimmedITermProfile: String {
         iTermProfile.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -271,9 +309,12 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
             geminiModelChain,
             String(geminiFlavorDefaultsVersion),
             geminiInitialPrompt,
+            geminiSupportingPrompt,
+            geminiRecoveryPrompt,
             String(geminiResumeLatest),
             String(geminiKeepTryMax),
             geminiAutoContinueMode.rawValue,
+            geminiModelChainExhaustedAction.rawValue,
             String(geminiAutoAllowSessionPermissions),
             String(geminiAutomationEnabled),
             String(geminiNeverSwitch),
@@ -455,6 +496,8 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
     mutating func prepareForLaunch() {
         guard agentKind == .gemini else { return }
         migrateGeminiFlavorDefaultsIfNeeded()
+        geminiSupportingPrompt = effectiveGeminiSupportingPrompt
+        geminiRecoveryPrompt = effectiveGeminiRecoveryPrompt
         if !geminiFlavor.supportsYoloFlag {
             geminiYolo = false
         }
@@ -558,11 +601,17 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         }
     }
 
-    mutating func configureGeminiFireAndForget(prompt: String) {
+    mutating func configureGeminiFireAndForget(
+        prompt: String,
+        supportingPrompt: String? = nil,
+        recoveryPrompt: String? = nil
+    ) {
         guard agentKind == .gemini else { return }
 
         geminiLaunchMode = .automationRunner
         configureGeminiPromptInjection(prompt: prompt)
+        configureGeminiSupportingPrompt(supportingPrompt ?? geminiSupportingPrompt)
+        configureGeminiRecoveryPrompt(recoveryPrompt ?? geminiRecoveryPrompt)
         geminiResumeLatest = false
         geminiAutomationEnabled = true
         geminiAutoAllowSessionPermissions = true
@@ -580,6 +629,26 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         }
     }
 
+    mutating func configureGeminiSupportingPrompt(_ prompt: String) {
+        guard agentKind == .gemini else { return }
+        geminiSupportingPrompt = Self.resolvedGeminiSupportingPrompt(prompt)
+    }
+
+    mutating func configureGeminiRecoveryPrompt(_ prompt: String) {
+        guard agentKind == .gemini else { return }
+        geminiRecoveryPrompt = Self.resolvedGeminiRecoveryPrompt(prompt)
+    }
+
+    static func resolvedGeminiSupportingPrompt(_ prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultGeminiSupportingPrompt : trimmed
+    }
+
+    static func resolvedGeminiRecoveryPrompt(_ prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultGeminiRecoveryPrompt : trimmed
+    }
+
     static func starter(kind: AgentKind, settings: AppSettings) -> Self {
         var profile = Self()
         profile.agentKind = kind
@@ -591,7 +660,7 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         case id, name, isFavorite, tags, notes
         case agentKind, workingDirectory, terminalApp, iTermProfile, openMode, extraCLIArgs, shellBootstrapCommand, openWorkspaceInFinderOnLaunch, openWorkspaceInVSCodeOnLaunch, tabLaunchDelayMs, environmentEntries, environmentPresetID, bootstrapPresetID
         case autoLaunchCompanions, companionProfileIDs
-        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiFlavorDefaultsVersion, geminiInitialPrompt, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiYolo, geminiSetHomeToIso, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiCapacityRetryMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
+        case geminiFlavor, geminiLaunchMode, geminiWrapperCommand, geminiISOHome, geminiInitialModel, geminiModelChain, geminiFlavorDefaultsVersion, geminiInitialPrompt, geminiSupportingPrompt, geminiRecoveryPrompt, geminiResumeLatest, geminiKeepTryMax, geminiAutoContinueMode, geminiModelChainExhaustedAction, geminiAutoAllowSessionPermissions, geminiAutomationEnabled, geminiNeverSwitch, geminiYolo, geminiSetHomeToIso, geminiQuietChildNodeWarnings, geminiRawOutput, geminiManualOverrideMs, geminiCapacityRetryMs, geminiHotkeyPrefix, geminiAutomationRunnerPath, nodeExecutable
         case copilotExecutable, copilotMode, copilotModel, copilotHome, copilotInitialPrompt, copilotMaxAutopilotContinues
         case codexExecutable, codexMode, codexModel
         case claudeExecutable, claudeModel
@@ -635,9 +704,12 @@ struct LaunchProfile: Codable, Identifiable, Equatable {
         geminiModelChain = try container.decodeDefault(String.self, forKey: .geminiModelChain, default: defaults.geminiModelChain)
         geminiFlavorDefaultsVersion = try container.decodeDefault(Int.self, forKey: .geminiFlavorDefaultsVersion, default: defaults.geminiFlavorDefaultsVersion)
         geminiInitialPrompt = try container.decodeDefault(String.self, forKey: .geminiInitialPrompt, default: defaults.geminiInitialPrompt)
+        geminiSupportingPrompt = try container.decodeDefault(String.self, forKey: .geminiSupportingPrompt, default: defaults.geminiSupportingPrompt)
+        geminiRecoveryPrompt = try container.decodeDefault(String.self, forKey: .geminiRecoveryPrompt, default: defaults.geminiRecoveryPrompt)
         geminiResumeLatest = try container.decodeDefault(Bool.self, forKey: .geminiResumeLatest, default: defaults.geminiResumeLatest)
         geminiKeepTryMax = try container.decodeDefault(Int.self, forKey: .geminiKeepTryMax, default: defaults.geminiKeepTryMax)
         geminiAutoContinueMode = try container.decodeDefault(AutoContinueMode.self, forKey: .geminiAutoContinueMode, default: defaults.geminiAutoContinueMode)
+        geminiModelChainExhaustedAction = try container.decodeDefault(GeminiModelChainExhaustedAction.self, forKey: .geminiModelChainExhaustedAction, default: defaults.geminiModelChainExhaustedAction)
         geminiAutoAllowSessionPermissions = try container.decodeDefault(Bool.self, forKey: .geminiAutoAllowSessionPermissions, default: defaults.geminiAutoAllowSessionPermissions)
         geminiAutomationEnabled = try container.decodeDefault(Bool.self, forKey: .geminiAutomationEnabled, default: defaults.geminiAutomationEnabled)
         geminiNeverSwitch = try container.decodeDefault(Bool.self, forKey: .geminiNeverSwitch, default: defaults.geminiNeverSwitch)

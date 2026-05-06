@@ -49,6 +49,12 @@ extension AgentKind {
                     if profile.geminiISOHome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         profile.geminiISOHome = profile.geminiFlavor.defaultISOHome
                     }
+                    if profile.geminiSupportingPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        profile.geminiSupportingPrompt = LaunchProfile.defaultGeminiSupportingPrompt
+                    }
+                    if profile.geminiRecoveryPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        profile.geminiRecoveryPrompt = LaunchProfile.defaultGeminiRecoveryPrompt
+                    }
                     let normalizedRunnerPath = BundledGeminiAutomationRunner.normalizedConfiguredPath(
                         profile.geminiAutomationRunnerPath,
                         fillBlankWithDefault: true

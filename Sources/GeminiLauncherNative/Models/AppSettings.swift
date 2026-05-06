@@ -148,6 +148,9 @@ struct AppSettings: Codable, Equatable {
     var defaultKeepTryMax: Int = 25
     var defaultManualOverrideMs: Int = 20_000
     var quietChildNodeWarningsByDefault: Bool = true
+    var launchCenterFireAndForgetPrompt: String = ""
+    var launchCenterFireAndForgetSupportingPrompt: String = ""
+    var launchCenterFireAndForgetRecoveryPrompt: String = ""
     var confirmBeforeLaunch: Bool = true
     var maxHistoryItems: Int = 100
     var maxBookmarks: Int = 60
@@ -164,6 +167,7 @@ struct AppSettings: Codable, Equatable {
         case defaultOpenMode, defaultHotkeyPrefix, defaultShellBootstrapCommand
         case defaultOpenWorkspaceInFinderOnLaunch, defaultOpenWorkspaceInVSCodeOnLaunch, defaultTabLaunchDelayMs
         case defaultKeepTryMax, defaultManualOverrideMs
+        case launchCenterFireAndForgetPrompt, launchCenterFireAndForgetSupportingPrompt, launchCenterFireAndForgetRecoveryPrompt
         case quietChildNodeWarningsByDefault, confirmBeforeLaunch
         case maxHistoryItems, maxBookmarks
         case didBootstrapSessionRecording
@@ -191,6 +195,9 @@ struct AppSettings: Codable, Equatable {
         defaultTabLaunchDelayMs = try container.decodeDefault(Int.self, forKey: .defaultTabLaunchDelayMs, default: defaults.defaultTabLaunchDelayMs)
         defaultKeepTryMax = try container.decodeDefault(Int.self, forKey: .defaultKeepTryMax, default: defaults.defaultKeepTryMax)
         defaultManualOverrideMs = try container.decodeDefault(Int.self, forKey: .defaultManualOverrideMs, default: defaults.defaultManualOverrideMs)
+        launchCenterFireAndForgetPrompt = try container.decodeDefault(String.self, forKey: .launchCenterFireAndForgetPrompt, default: defaults.launchCenterFireAndForgetPrompt)
+        launchCenterFireAndForgetSupportingPrompt = try container.decodeDefault(String.self, forKey: .launchCenterFireAndForgetSupportingPrompt, default: defaults.launchCenterFireAndForgetSupportingPrompt)
+        launchCenterFireAndForgetRecoveryPrompt = try container.decodeDefault(String.self, forKey: .launchCenterFireAndForgetRecoveryPrompt, default: defaults.launchCenterFireAndForgetRecoveryPrompt)
         quietChildNodeWarningsByDefault = try container.decodeDefault(Bool.self, forKey: .quietChildNodeWarningsByDefault, default: defaults.quietChildNodeWarningsByDefault)
         confirmBeforeLaunch = try container.decodeDefault(Bool.self, forKey: .confirmBeforeLaunch, default: defaults.confirmBeforeLaunch)
         maxHistoryItems = try container.decodeDefault(Int.self, forKey: .maxHistoryItems, default: defaults.maxHistoryItems)

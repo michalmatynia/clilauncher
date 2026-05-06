@@ -20,9 +20,6 @@ final class ProfileStore: ObservableObject {
     private(set) var stateURL: URL
     private var activePersistenceBackend: ActivePersistenceBackend
     private var isApplyingStateNormalization = false
-    private var pendingSaveTask: Task<Void, Never>?
-    private static let saveDebounceNanoseconds: UInt64 = 400_000_000
-    nonisolated(unsafe) private var terminationObserver: NSObjectProtocol?
 
     @Published var profiles: [LaunchProfile] { didSet { stateDidChange() } }
     @Published var selectedProfileID: UUID? { didSet { stateDidChange() } }
@@ -71,14 +68,12 @@ final class ProfileStore: ObservableObject {
         let initialBookmarks: [WorkspaceBookmark]
         let initialWorkbenches: [LaunchWorkbench]
 
-        let loadedBackend: ActivePersistenceBackend?
         if let (state, backend) = Self.loadPersistedState(
             primaryStore: mongoStateStore,
             stateURL: resolvedStateURL,
             appSupport: AppPaths.applicationSupportDirectory
         ) {
             activePersistenceBackend = backend
-            loadedBackend = backend
             initialProfiles = state.profiles
             initialSelectedProfileID = state.selectedProfileID ?? state.profiles.first?.id
             initialSettings = state.settings
@@ -86,7 +81,6 @@ final class ProfileStore: ObservableObject {
             initialBookmarks = state.bookmarks
             initialWorkbenches = state.workbenches
         } else {
-            loadedBackend = nil
             let defaultSettings = AppSettings()
             let starters = Self.defaultProfiles(settings: defaultSettings)
             initialProfiles = starters
@@ -105,25 +99,6 @@ final class ProfileStore: ObservableObject {
         bookmarks = initialBookmarks
         workbenches = initialWorkbenches
         normalizeState()
-        if persistenceMode == .automatic, loadedBackend == nil {
-            flushPendingSave()
-        }
-
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.flushPendingSave()
-            }
-        }
-    }
-
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
     }
 
     private static func loadState(at url: URL) -> PersistedState? {
@@ -441,27 +416,6 @@ final class ProfileStore: ObservableObject {
             sanitizeReferencesWithoutNotifications()
             clampSelectionWithoutNotifications()
         }
-        scheduleSave()
-    }
-
-    private func scheduleSave() {
-        pendingSaveTask?.cancel()
-        pendingSaveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.saveDebounceNanoseconds)
-            guard !Task.isCancelled else { return }
-            self?.performPendingSave()
-        }
-    }
-
-    private func performPendingSave() {
-        pendingSaveTask = nil
-        writeStateToDisk()
-    }
-
-    func flushPendingSave() {
-        pendingSaveTask?.cancel()
-        pendingSaveTask = nil
-        writeStateToDisk()
     }
 
     private func writeStateToDisk() {
@@ -622,7 +576,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func save() {
-        flushPendingSave()
+        writeStateToDisk()
     }
 
     func setStateURLForTesting(_ url: URL) {

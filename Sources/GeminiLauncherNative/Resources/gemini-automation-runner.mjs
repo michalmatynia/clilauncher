@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const RUNNER_PATH = fileURLToPath(import.meta.url);
-const RUNNER_BUILD_ID = '20260424T154225Z';
+const RUNNER_BUILD_ID = '20260426T090000Z';
 const RUNNER_LOG_FILE = (process.env.RUNNER_LOG_FILE || '').trim();
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
@@ -55,6 +55,8 @@ const CLI_FLAVOR = resolveFlavor(process.env.CLI_FLAVOR || 'preview');
 const FLAVOR_LABEL = defaultFlavorLabel(CLI_FLAVOR);
 const DEFAULT_WRAPPER = defaultWrapperForFlavor(CLI_FLAVOR);
 const DEFAULT_ISO_HOME = defaultISOHomeForFlavor(CLI_FLAVOR);
+const MODEL_AUTO = isEnabled(process.env.GEMINI_MODEL_AUTO ?? process.env.MODEL_AUTO, false);
+const GEMINI_AUTO_MODEL = String(process.env.GEMINI_AUTO_MODEL || 'auto').trim() || 'auto';
 
 const MODELS = (
   process.env.MODEL_CHAIN ||
@@ -126,6 +128,8 @@ const STARTUP_CLEAR_COMMAND = (process.env.STARTUP_CLEAR_COMMAND || '/clear').tr
 const STARTUP_STATS_COMMAND = (process.env.STARTUP_STATS_COMMAND || '/stats').trim();
 const STARTUP_MODEL_COMMAND = (process.env.STARTUP_MODEL_COMMAND || '/model').trim();
 const STATS_SESSION_FALLBACK_COMMAND = (process.env.STATS_SESSION_FALLBACK_COMMAND || '/stats').trim();
+const AUTH_COMMAND = (process.env.AUTH_COMMAND || '/auth').trim();
+const MODEL_CHAIN_EXHAUSTED_ACTION = normalizeModelChainExhaustedAction(process.env.MODEL_CHAIN_EXHAUSTED_ACTION || 'auth');
 
 const GEMINI_WRAPPER_ENV = process.env.GEMINI_WRAPPER || DEFAULT_WRAPPER;
 const GEMINI_WRAPPER_ARGS = parseJsonArrayEnv(process.env.GEMINI_WRAPPER_ARGS_JSON);
@@ -145,7 +149,8 @@ const DEFAULT_HOTKEY_PREFIX = process.platform === 'darwin' ? 'ctrl-g' : 'ctrl-]
 const HOTKEY_PREFIX_NAME = (process.env.HOTKEY_PREFIX || DEFAULT_HOTKEY_PREFIX).trim().toLowerCase();
 const { byte: HOTKEY_PREFIX_BYTE, label: HOTKEY_PREFIX_LABEL } = resolveHotkeyPrefix(HOTKEY_PREFIX_NAME);
 
-const CONTINUE_COMMAND = process.env.CONTINUE_COMMAND || 'continue';
+const CONTINUE_COMMAND = (process.env.CONTINUE_COMMAND || 'continue').trim() || 'continue';
+const CONTINUE_FALLBACK_COMMAND = (process.env.CONTINUE_FALLBACK_COMMAND || '').trim();
 const STATS_SESSION_COMMAND = (process.env.STATS_SESSION_COMMAND || '/stats session').trim();
 const MODEL_MANAGE_COMMAND = (process.env.MODEL_MANAGE_COMMAND || '/model manage').trim();
 const MODEL_SWITCH_COMMAND_TEMPLATE = (process.env.MODEL_SWITCH_COMMAND_TEMPLATE || '/model set {model}').trim();
@@ -153,7 +158,15 @@ const MODEL_SWITCH_MODE = ((process.env.MODEL_SWITCH_MODE || 'manage').trim().to
 const PERMISSION_OPTION_LABEL = (process.env.PERMISSION_OPTION_LABEL || 'allow this command for all future sessions').trim().toLowerCase();
 const PERMISSION_OPTION_INDEX = Math.max(1, Math.min(9, toNumber(process.env.PERMISSION_OPTION_INDEX, 3)));
 const PROMPT_COMMAND_SETTLE_MS = toNumber(process.env.PROMPT_COMMAND_SETTLE_MS, 900);
+const STARTUP_VISIBLE_PROMPT_COMMAND_SETTLE_MS = toNumber(process.env.STARTUP_VISIBLE_PROMPT_COMMAND_SETTLE_MS, 180);
+const PROMPT_SUBMIT_DELAY_MS = toNumber(process.env.PROMPT_SUBMIT_DELAY_MS, 80);
+const PROMPT_SUBMIT_SETTLE_MS = toNumber(process.env.PROMPT_SUBMIT_SETTLE_MS, Math.max(PROMPT_COMMAND_SETTLE_MS, 250));
+const PROMPT_SUBMIT_PROCESSING_GRACE_MS = toNumber(process.env.PROMPT_SUBMIT_PROCESSING_GRACE_MS, 750);
+const STARTUP_FIRST_COMMAND_DELAY_MS = toNumber(process.env.STARTUP_FIRST_COMMAND_DELAY_MS, 180);
 const MODEL_MANAGE_FLOW_TIMEOUT_MS = toNumber(process.env.MODEL_MANAGE_FLOW_TIMEOUT_MS, 8000);
+const INITIAL_PROMPT_SUBMIT_CONFIRM_MS = toNumber(process.env.INITIAL_PROMPT_SUBMIT_CONFIRM_MS, 260);
+const INITIAL_PROMPT_SUBMIT_RETRY_MAX = toNumber(process.env.INITIAL_PROMPT_SUBMIT_RETRY_MAX, 3);
+const USAGE_LIMIT_ACTION_TTL_MS = Math.max(MODEL_MANAGE_FLOW_TIMEOUT_MS * 4, 15000);
 const KEEP_LABELS = splitListEnv(process.env.KEEP_OPTION_LABELS, [
   'keep trying',
   'try again',
@@ -183,12 +196,23 @@ let currentGeminiCliCapabilities = defaultGeminiCliCapabilities();
 let rawTail = '';
 let normalizedTail = '';
 let sentInitialPrompt = false;
+let lastUserPrompt = '';
+let pendingPostUsageLimitAdvance = null;
+let pendingPostCapacityAdvance = null;
+let lastExistingUsageLimitHandlerAt = 0;
+let lastModelSwitchSentAt = 0;
+const SAFETY_NET_DEBOUNCE_MS = 5000;
 let startupClearCompleted = false;
 let startupStatsObserved = false;
 let startupStatsSnapshot = null;
 let startupStatsBlockedReason = '';
+let startupStatsBlocksInitialPrompt = false;
 let startupModelCapacityObserved = false;
 let startupModelCapacitySnapshot = null;
+let initialPromptSubmittedFingerprint = '';
+let authHandoffInProgress = false;
+let authRestartTelemetryPending = false;
+let suppressInitialPromptForAuthRestart = false;
 let stateGeneration = 0;
 let currentSnapshot = makeSnapshot('normal');
 let sawNoResumeSession = false;
@@ -201,6 +225,7 @@ const AUTH_WAIT_WARN_MS = toNumber(process.env.AUTH_WAIT_WARN_MS, 15000);
 let automationEnabled = AUTOMATION_DEFAULT_ENABLED;
 let automationDisabledReason = automationEnabled ? '' : 'manual';
 let automationPausedUntil = 0;
+let promptAutoContinueAlways = false;
 
 let hotkeyAwaitingCommand = false;
 let hotkeyTimer = null;
@@ -211,7 +236,11 @@ let continueTimer = null;
 let promptCommandTimer = null;
 let scheduledPromptCommand = null;
 let pendingPromptCommandNudgeTimer = null;
+const pendingSubmitTimers = new Set();
+let pendingSubmitSettleUntil = 0;
 let initialPromptTimer = null;
+let initialPromptSubmitConfirmTimer = null;
+let pendingInitialPromptSubmit = null;
 let restartTimer = null;
 let forceKillTimer = null;
 let automationResumeTimer = null;
@@ -621,13 +650,22 @@ function spawnGeminiWithPty() {
   startupStatsObserved = false;
   startupStatsSnapshot = null;
   startupStatsBlockedReason = '';
+  startupStatsBlocksInitialPrompt = false;
   startupModelCapacityObserved = false;
   startupModelCapacitySnapshot = null;
+  initialPromptSubmittedFingerprint = '';
+  pendingInitialPromptSubmit = null;
   initialPromptPendingSince = 0;
   lastTerminalDataAt = Date.now();
   lastChildExitAt = 0;
   recentActionKeys.clear();
   continueLoopArmed = Boolean(GEMINI_INITIAL_PROMPT);
+  pendingPostUsageLimitAdvance = null;
+  pendingPostCapacityAdvance = null;
+  lastExistingUsageLimitHandlerAt = 0;
+  lastSafetyNetAdvanceAt = 0;
+  lastSafetyNetAdvanceFromModel = '';
+  lastDetectedApiUsageLimitFingerprint = '';
 
   if (automationDisabledReason === 'usage_limit') {
     automationEnabled = AUTOMATION_DEFAULT_ENABLED;
@@ -637,26 +675,39 @@ function spawnGeminiWithPty() {
   const model = currentModel();
   const wrapperInfo = inspectCommandTarget(GEMINI_WRAPPER_ENV, process.env.PATH || '');
   currentGeminiCliCapabilities = resolveGeminiCliCapabilities(wrapperInfo);
-  const freshSessionReset = prepareFreshWorkspaceSessionForPromptLaunch();
+  const postAuthTelemetryLaunch = authRestartTelemetryPending;
+  const suppressInitialPrompt = suppressInitialPromptForAuthRestart || postAuthTelemetryLaunch;
+  const freshSessionReset = suppressInitialPrompt
+    ? makeFreshSessionPrepSkippedResult('account change telemetry restart')
+    : prepareFreshWorkspaceSessionForPromptLaunch();
   const env = buildChildEnv(currentGeminiCliCapabilities);
   const compatibilitySystemSettingsPath = resolveActiveCompatibilitySystemSettingsPath(env, currentGeminiCliCapabilities);
   const { args, canResume, hasInitialPrompt, launchesWithInitialPrompt } = buildGeminiArgs(model, {
-    allowLaunchPrompt: shouldLaunchInitialPromptWithLaunchArgs(currentGeminiCliCapabilities),
+    allowLaunchPrompt: !suppressInitialPrompt && shouldLaunchInitialPromptWithLaunchArgs(currentGeminiCliCapabilities, { ptyAvailable: true }),
+    suppressInitialPrompt,
   });
-  const launchBlockedStartupStatsReason = resolveStartupStatsBlockReason({
-    hasInitialPrompt,
-    capabilities: currentGeminiCliCapabilities,
-    ptyAvailable: true,
-  });
-  sentInitialPrompt = launchesWithInitialPrompt;
+  const launchBlockedStartupStatsReason = launchesWithInitialPrompt
+    ? ''
+    : resolveStartupStatsBlockReason({
+      hasInitialPrompt,
+      capabilities: currentGeminiCliCapabilities,
+      ptyAvailable: true,
+    });
+  sentInitialPrompt = launchesWithInitialPrompt || suppressInitialPrompt;
+  continueLoopArmed = Boolean(GEMINI_INITIAL_PROMPT) && !suppressInitialPrompt;
   const launchArgs = [...GEMINI_WRAPPER_ARGS, ...args];
-  pendingPromptCommand = launchBlockedStartupStatsReason
-    ? null
-    : (launchesWithInitialPrompt ? null : buildStartupCommandPipeline(currentGeminiCliCapabilities));
+  pendingPromptCommand = postAuthTelemetryLaunch
+    ? buildPostAuthTelemetryCommand()
+    : (launchBlockedStartupStatsReason
+      ? null
+      : (launchesWithInitialPrompt ? null : buildStartupCommandPipeline(currentGeminiCliCapabilities)));
   const launchPlan = buildLaunchPlan(wrapperInfo, launchArgs);
   lastLaunchPlan = launchPlan;
   if (launchBlockedStartupStatsReason) {
-    setStartupStatsBlocked(launchBlockedStartupStatsReason, { emitBanner: false });
+    setStartupStatsBlocked(launchBlockedStartupStatsReason, {
+      emitBanner: false,
+      blocksInitialPrompt: false,
+    });
   }
 
   logLaunchBanner({
@@ -670,8 +721,12 @@ function spawnGeminiWithPty() {
     compatibilitySystemSettingsPath,
     startupPipelineQueued: Boolean(pendingPromptCommand),
     startupStatsBlockedReason: launchBlockedStartupStatsReason,
+    startupStatsBlocksInitialPrompt,
     freshSessionReset,
   });
+  if (postAuthTelemetryLaunch && pendingPromptCommand) {
+    console.error(`\n[${FLAVOR_LABEL}] Account change telemetry: running ${STARTUP_STATS_COMMAND} -> ${STARTUP_MODEL_COMMAND} without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+  }
 
   let ptyProcess;
   try {
@@ -731,21 +786,32 @@ function spawnGeminiDirect() {
   startupStatsObserved = false;
   startupStatsSnapshot = null;
   startupStatsBlockedReason = '';
+  startupStatsBlocksInitialPrompt = false;
   startupModelCapacityObserved = false;
   startupModelCapacitySnapshot = null;
+  initialPromptSubmittedFingerprint = '';
+  pendingInitialPromptSubmit = null;
   const model = currentModel();
   const wrapperInfo = inspectCommandTarget(GEMINI_WRAPPER_ENV, process.env.PATH || '');
   currentGeminiCliCapabilities = resolveGeminiCliCapabilities(wrapperInfo);
-  const freshSessionReset = prepareFreshWorkspaceSessionForPromptLaunch();
+  const postAuthTelemetryLaunch = authRestartTelemetryPending;
+  const suppressInitialPrompt = suppressInitialPromptForAuthRestart || postAuthTelemetryLaunch;
+  const freshSessionReset = suppressInitialPrompt
+    ? makeFreshSessionPrepSkippedResult('account change telemetry restart')
+    : prepareFreshWorkspaceSessionForPromptLaunch();
   const { args, canResume, hasInitialPrompt, launchesWithInitialPrompt } = buildGeminiArgs(model, {
-    allowLaunchPrompt: shouldLaunchInitialPromptWithLaunchArgs(currentGeminiCliCapabilities),
+    allowLaunchPrompt: !suppressInitialPrompt && shouldLaunchInitialPromptWithLaunchArgs(currentGeminiCliCapabilities, { ptyAvailable: false }),
+    suppressInitialPrompt,
   });
-  const launchBlockedStartupStatsReason = resolveStartupStatsBlockReason({
-    hasInitialPrompt,
-    capabilities: currentGeminiCliCapabilities,
-    ptyAvailable: false,
-  });
-  sentInitialPrompt = launchesWithInitialPrompt;
+  const launchBlockedStartupStatsReason = launchesWithInitialPrompt
+    ? ''
+    : resolveStartupStatsBlockReason({
+      hasInitialPrompt,
+      capabilities: currentGeminiCliCapabilities,
+      ptyAvailable: false,
+    });
+  sentInitialPrompt = launchesWithInitialPrompt || suppressInitialPrompt;
+  continueLoopArmed = Boolean(GEMINI_INITIAL_PROMPT) && !suppressInitialPrompt;
   const env = buildChildEnv(currentGeminiCliCapabilities);
   const launchArgs = [...GEMINI_WRAPPER_ARGS, ...args];
   const compatibilitySystemSettingsPath = resolveActiveCompatibilitySystemSettingsPath(env, currentGeminiCliCapabilities);
@@ -766,8 +832,12 @@ function spawnGeminiDirect() {
     compatibilitySystemSettingsPath,
     startupPipelineQueued: false,
     startupStatsBlockedReason: launchBlockedStartupStatsReason,
+    startupStatsBlocksInitialPrompt,
     freshSessionReset,
   });
+  if (postAuthTelemetryLaunch && pendingPromptCommand) {
+    console.error(`\n[${FLAVOR_LABEL}] Account change telemetry: running ${STARTUP_STATS_COMMAND} -> ${STARTUP_MODEL_COMMAND} without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+  }
 
   const child = spawnProcess(launchPlan.file, launchPlan.args, {
     cwd: process.cwd(),
@@ -862,10 +932,15 @@ function isBenignStdoutWriteError(error) {
 }
 
 function buildGeminiArgs(model, options = {}) {
-  const hasInitialPrompt = Boolean(GEMINI_INITIAL_PROMPT);
+  const hasInitialPrompt = Boolean(GEMINI_INITIAL_PROMPT) && !Boolean(options.suppressInitialPrompt);
   const shouldForceFreshSession = hasInitialPrompt;
   const canResume = !shouldForceFreshSession && resumeEnabledThisRun && workspaceHasResumableSessions();
-  const args = ['--model', model];
+  const args = [];
+  if (MODEL_AUTO) {
+    args.push('--model', GEMINI_AUTO_MODEL);
+  } else if (model) {
+    args.push('--model', model);
+  }
   const launchesWithInitialPrompt = Boolean(options.allowLaunchPrompt) && hasInitialPrompt;
 
   if (canResume) {
@@ -894,6 +969,8 @@ function buildChildEnv(geminiCliCapabilities = currentGeminiCliCapabilities) {
   }
 
   env.CLI_FLAVOR = CLI_FLAVOR;
+  env.GEMINI_MODEL_AUTO = MODEL_AUTO ? '1' : '0';
+  env.GEMINI_AUTO_MODEL = GEMINI_AUTO_MODEL;
   env.GEMINI_ISO_HOME = ISO_HOME;
   if (CLI_FLAVOR === 'preview') env.GEMINI_PREVIEW_ISO_HOME = ISO_HOME;
   if (CLI_FLAVOR === 'nightly') env.GEMINI_NIGHTLY_ISO_HOME = ISO_HOME;
@@ -983,15 +1060,19 @@ function workspaceHasResumableSessions() {
   }
 }
 
+function makeFreshSessionPrepSkippedResult(reason = '') {
+  return {
+    requested: false,
+    cleared: false,
+    removedPathCount: 0,
+    projectIdentifier: '',
+    reason,
+  };
+}
+
 function prepareFreshWorkspaceSessionForPromptLaunch() {
   if (!GEMINI_INITIAL_PROMPT) {
-    return {
-      requested: false,
-      cleared: false,
-      removedPathCount: 0,
-      projectIdentifier: '',
-      reason: '',
-    };
+    return makeFreshSessionPrepSkippedResult();
   }
 
   const registryPath = path.join(ISO_HOME, '.gemini', 'projects.json');
@@ -1293,10 +1374,14 @@ function logLaunchBanner({
   compatibilitySystemSettingsPath,
   startupPipelineQueued,
   startupStatsBlockedReason,
+  startupStatsBlocksInitialPrompt,
   freshSessionReset,
 }) {
+  const modelLabel = MODEL_AUTO
+    ? `Gemini CLI ${GEMINI_AUTO_MODEL}${model ? ` (fallback chain starts at ${model})` : ''}`
+    : model;
   const lines = [
-    `\n[${FLAVOR_LABEL}] Launching model: ${model}${canResume ? ' (resuming latest)' : ' (fresh)'}${RAW_OUTPUT ? ' [raw-output]' : ''}`,
+    `\n[${FLAVOR_LABEL}] Launching model: ${modelLabel}${canResume ? ' (resuming latest)' : ' (fresh)'}${RAW_OUTPUT ? ' [raw-output]' : ''}`,
     `[${FLAVOR_LABEL}] Flavor: ${CLI_FLAVOR}`,
     `[${FLAVOR_LABEL}] Runner path: ${RUNNER_PATH}`,
     `[${FLAVOR_LABEL}] Runner build: ${RUNNER_BUILD_ID}`,
@@ -1324,19 +1409,21 @@ function logLaunchBanner({
       lines.push(`[${FLAVOR_LABEL}] Fresh session prep: ${freshSessionReset.reason || 'no prior workspace session binding was cleared'}`);
     }
   }
-  if (hasInitialPrompt && startupStatsBlockedReason) {
-    lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: blocked until startup ${startupPipelineLabel()} completes`);
+  if (hasInitialPrompt && startupStatsBlockedReason && startupStatsBlocksInitialPrompt) {
+    lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: blocked until startup ${startupPromptGateLabel()} completes`);
   } else if (launchesWithInitialPrompt) {
     lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: launch args (--prompt-interactive)`);
   } else if (hasInitialPrompt && startupPipelineQueued) {
-    lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: queued after startup ${startupPipelineLabel()}`);
+    lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: queued after startup ${startupPromptDeliveryQueueLabel()}`);
   } else if (hasInitialPrompt) {
     lines.push(`[${FLAVOR_LABEL}] Initial prompt delivery: queued after prompt readiness`);
   }
-  if (startupStatsBlockedReason) {
+  if (startupStatsBlockedReason && startupStatsBlocksInitialPrompt) {
     lines.push(`[${FLAVOR_LABEL}] Startup sequence: blocked (${startupStatsBlockedReason})`);
+  } else if (startupStatsBlockedReason) {
+    lines.push(`[${FLAVOR_LABEL}] Startup session stats: unavailable (${startupStatsBlockedReason})`);
   } else if (startupPipelineQueued) {
-    lines.push(`[${FLAVOR_LABEL}] Startup sequence: queued (${startupPipelineLabel()})`);
+    lines.push(`[${FLAVOR_LABEL}] Startup sequence: queued (${startupSequenceQueuedLabel()})`);
   } else if (geminiCliCapabilities?.startupStatsAutomationDisabledReason) {
     lines.push(`[${FLAVOR_LABEL}] Startup session stats: skipped (${geminiCliCapabilities.startupStatsAutomationDisabledReason})`);
   }
@@ -1367,6 +1454,26 @@ function startupPipelineLabel() {
     .join(' -> ');
 }
 
+function startupPromptGateLabel() {
+  return String(STARTUP_CLEAR_COMMAND || '').trim() || 'prompt readiness';
+}
+
+function startupPromptDeliveryQueueLabel() {
+  const gate = startupPromptGateLabel();
+  const telemetry = [STARTUP_STATS_COMMAND, STARTUP_MODEL_COMMAND]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' -> ');
+  return telemetry ? `${gate}; telemetry ${telemetry} best effort` : gate;
+}
+
+function startupSequenceQueuedLabel() {
+  const pipeline = startupPipelineLabel();
+  const hasBestEffortTelemetry = Boolean(String(STARTUP_STATS_COMMAND || '').trim() || String(STARTUP_MODEL_COMMAND || '').trim());
+  if (!pipeline) return 'prompt readiness';
+  return hasBestEffortTelemetry ? `${pipeline}; telemetry best effort` : pipeline;
+}
+
 function handleTerminalData(runId, chunk) {
   lastHeartbeat = Date.now();
   lastTerminalDataAt = Date.now();
@@ -1384,10 +1491,63 @@ function handleTerminalData(runId, chunk) {
   }
 
   detectBlockingBanners();
+  detectApiErrorUsageLimit();
 
   const snapshot = detectCurrentSnapshot();
   updateCurrentSnapshot(snapshot);
   maybeAutomate(runId, snapshot);
+}
+
+let lastDetectedApiUsageLimitFingerprint = '';
+function detectApiErrorUsageLimit() {
+  if (lastSafetyNetAdvanceAt > 0 && Date.now() - lastSafetyNetAdvanceAt < SAFETY_NET_DEBOUNCE_MS) return;
+  if (lastCapacityAt > 0 && Date.now() - lastCapacityAt < SAFETY_NET_DEBOUNCE_MS) return;
+  if (lastExistingUsageLimitHandlerAt > 0 && Date.now() - lastExistingUsageLimitHandlerAt < SAFETY_NET_DEBOUNCE_MS) return;
+  if (currentSnapshot?.kind === 'usage_limit' || currentSnapshot?.kind === 'capacity_menu') return;
+
+  const tail = normalizedTail.slice(-4000);
+  const apiErrorMatch = /api\s+error[^\]]*exhausted\s+your\s+capacity\s+on\s+this\s+model/i.test(tail)
+    || /api\s+error[^\]]*quota\s+will\s+reset\s+after/i.test(tail);
+  if (!apiErrorMatch) return;
+
+  const usageLimitModelInTail = usageLimitModelFromLines(tail.split('\n'));
+  if (usageLimitModelInTail && !modelIdentifiersMatch(usageLimitModelInTail, currentModel())) {
+    return;
+  }
+
+  const resetMatch = tail.match(/quota\s+will\s+reset\s+after\s+([0-9hms\s]+)/i);
+  const fingerprint = `${usageLimitModelInTail || currentModel()}:${resetMatch ? resetMatch[1].trim() : 'no-reset'}`;
+  if (fingerprint === lastDetectedApiUsageLimitFingerprint) return;
+  lastDetectedApiUsageLimitFingerprint = fingerprint;
+
+  const stuckKinds = new Set(['stats-session', 'model-manage-open', 'model-manage-route', 'model-manage-finalize']);
+  if (pendingPromptCommand) {
+    if (stuckKinds.has(String(pendingPromptCommand.kind || ''))) {
+      console.error(`\n[${FLAVOR_LABEL}] Dropping stuck ${pendingPromptCommand.kind} pending command before usage-limit recovery.\n`);
+      pendingPromptCommand = null;
+      clearPromptCommandTimer();
+      clearPendingPromptCommandNudgeTimer();
+      clearMenuPlan();
+    } else {
+      return;
+    }
+  }
+
+  clearContinueTimer();
+  clearPromptCommandTimer();
+  continueLoopArmed = false;
+  pendingPostUsageLimitAdvance = {
+    reason: `Usage limit reached on ${currentModel()} (API error)`,
+    usageLimitModel: currentModel(),
+    armedAt: Date.now(),
+  };
+  if (DEBUG_AUTOMATION) {
+    console.error(`[${FLAVOR_LABEL}][prompt] armed post-usage-limit advance from API error (${fingerprint})`);
+  }
+  if (!automationEnabled && AUTO_DISABLE_ON_USAGE_LIMIT) {
+    setAutomationEnabled(true, 'usage_limit_recovery');
+  }
+
 }
 
 function captureStartupStatsObservation() {
@@ -1407,6 +1567,7 @@ function captureStartupModelCapacityObservation() {
   const visibleText = currentVisibleTerminalText();
   const snapshot = extractStartupModelCapacitySnapshot(visibleText);
   if (!snapshot) return;
+  if (!MODEL_AUTO && (!Array.isArray(snapshot.rows) || snapshot.rows.length === 0) && !snapshot.currentModel) return;
 
   startupModelCapacityObserved = true;
   startupModelCapacitySnapshot = snapshot;
@@ -1426,18 +1587,27 @@ function currentVisibleTerminalText() {
 function setStartupStatsBlocked(reason, options = {}) {
   const cleanedReason = String(reason || '').trim();
   if (!cleanedReason) return false;
-  if (startupStatsBlockedReason === cleanedReason) return false;
+  const blocksInitialPrompt = options.blocksInitialPrompt !== false;
+  if (startupStatsBlockedReason === cleanedReason && startupStatsBlocksInitialPrompt === blocksInitialPrompt) return false;
 
   startupStatsBlockedReason = cleanedReason;
+  startupStatsBlocksInitialPrompt = blocksInitialPrompt;
   pendingPromptCommand = null;
-  sentInitialPrompt = false;
-  continueLoopArmed = false;
-  clearInitialPromptTimer();
   clearPromptCommandTimer();
 
+  if (blocksInitialPrompt) {
+    sentInitialPrompt = false;
+    continueLoopArmed = false;
+    clearInitialPromptTimer();
+  }
+
   if (options.emitBanner !== false) {
-    console.error(`\n[${FLAVOR_LABEL}] Startup sequence: blocked (${cleanedReason})`);
-    console.error(`[${FLAVOR_LABEL}] Initial prompt delivery: blocked until startup ${startupPipelineLabel()} completes.\n`);
+    if (blocksInitialPrompt) {
+      console.error(`\n[${FLAVOR_LABEL}] Startup sequence: blocked (${cleanedReason})`);
+      console.error(`[${FLAVOR_LABEL}] Initial prompt delivery: blocked until startup ${startupPromptGateLabel()} completes.\n`);
+    } else {
+      console.error(`\n[${FLAVOR_LABEL}] Startup session stats: unavailable (${cleanedReason}) — continuing startup telemetry.\n`);
+    }
   }
 
   return true;
@@ -1470,8 +1640,12 @@ function detectBlockingBanners() {
     if (currentIsPro && nextNonProIndex >= 0 && !NEVER_SWITCH) {
       const target = MODELS[nextNonProIndex];
       console.error('[gemini-' + CLI_FLAVOR + '-pty] ⚠ Free-tier policy banner detected on "' + current + '" — auto-switching to "' + target + '".');
-      modelIndex = nextNonProIndex;
-      requestLauncherAction('restart');
+      if (activePty && queueDirectModelSwitchCommand(nextNonProIndex, 'Free-tier policy banner detected')) {
+        scheduleStaticRecheck(QUICK_RECHECK_MS);
+      } else {
+        modelIndex = nextNonProIndex;
+        requestLauncherAction('restart');
+      }
     } else {
       const tierSafe = MODELS.filter((m) => !/pro/i.test(m));
       const hint = tierSafe.length > 0
@@ -1490,6 +1664,14 @@ function hasLiveAuthWait(liveScreenText, fallbackTailText = '') {
   }
 
   return /waiting\s+for\s+auth(?:entication)?\b/i.test(String(fallbackTailText || ''));
+}
+
+function hasAuthRestartRequiredPrompt(text) {
+  const normalized = normalizeTerminalText(text).replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  return /authentication\s+succeeded/i.test(normalized)
+    && /needs\s+to\s+be\s+restarted/i.test(normalized)
+    && /press\s+r\s+to\s+restart/i.test(normalized);
 }
 
 function normalizeTerminalText(input) {
@@ -1547,9 +1729,60 @@ function detectCurrentSnapshot() {
   if (screenSnapshot.kind !== 'normal') return screenSnapshot;
 
   const rawSnapshot = detectSnapshotFromText(normalizedTail.slice(-NORMALIZED_TAIL_MAX), 'raw');
-  if (rawSnapshot.kind !== 'normal') return rawSnapshot;
+  const promptUsageLimitSnapshot = detectPromptUsageLimitSnapshotFromTail(screenSnapshot);
+  if (rawSnapshot.kind !== 'normal') {
+    if (screenSnapshot.chatPromptActive && isStaleRawSnapshotBehindPrompt(rawSnapshot)) {
+      return promptUsageLimitSnapshot || screenSnapshot;
+    }
+    return rawSnapshot;
+  }
 
-  return screenSnapshot;
+  return promptUsageLimitSnapshot || screenSnapshot;
+}
+
+function isStaleRawSnapshotBehindPrompt(snapshot) {
+  if (snapshot?.kind === 'usage_limit') {
+    if (snapshot?.usageLimitPromptActive && usageLimitSnapshotMatchesVisibleModel(snapshot)) {
+      return false;
+    }
+    return true;
+  }
+
+  return [
+    'usage_limit',
+    'capacity_menu',
+    'capacity_continue',
+    'capacity_info',
+  ].includes(String(snapshot?.kind || ''));
+}
+
+function detectPromptUsageLimitSnapshotFromTail(screenSnapshot) {
+  if (!screenSnapshot?.chatPromptActive) return null;
+
+  const tailText = normalizedTail.slice(-NORMALIZED_TAIL_MAX);
+  if (!hasUsageLimitSignal(tailText)) return null;
+
+  const tailLines = tailText.split('\n');
+  if (!hasChatPromptAfterUsageLimit(tailLines)) return null;
+  const usageLimitModel = usageLimitModelFromLines(tailLines);
+  if (usageLimitModel && !usageLimitSnapshotMatchesVisibleModel({ usageLimitModel })) {
+    return null;
+  }
+
+  return makeSnapshot('usage_limit', 'tail', {
+    reason: 'usage limit reached',
+    fingerprint: fingerprintForUsageLimitEvent(tailLines),
+    keepOption: null,
+    keepOptionText: '',
+    stopOption: null,
+    stopOptionText: '',
+    selectedOption: null,
+    options: [],
+    chatPromptActive: true,
+    promptInputText: screenSnapshot.promptInputText || extractPromptInputText(tailLines),
+    usageLimitPromptActive: true,
+    usageLimitModel,
+  });
 }
 
 function detectSnapshotFromText(text, source) {
@@ -1557,6 +1790,16 @@ function detectSnapshotFromText(text, source) {
   const tail = rawLines.join('\n').slice(-NORMALIZED_TAIL_MAX);
   const menuBlocks = extractMenuBlocks(rawLines);
   const chatPromptActive = detectChatPromptActive(rawLines);
+  const promptInputText = extractPromptInputText(rawLines);
+
+  if (hasAuthRestartRequiredPrompt(tail) && !hasChatPromptAfterAuthRestartRequired(rawLines)) {
+    return makeSnapshot('auth_restart_required', source, {
+      reason: 'authentication succeeded; restart required',
+      fingerprint: fingerprintFromLines(compactLines(tail), ['authentication succeeded', 'press r to restart']),
+      chatPromptActive,
+      promptInputText,
+    });
+  }
 
   const permissionBlock = findPermissionMenuBlock(rawLines, menuBlocks, chatPromptActive);
   if (permissionBlock) {
@@ -1626,11 +1869,13 @@ function detectSnapshotFromText(text, source) {
 
   const modelManageModelsBlock = findModelManageModelListBlock(rawLines, menuBlocks, chatPromptActive);
   if (modelManageModelsBlock) {
+    const capacitySnapshot = extractStartupModelCapacitySnapshot(rawLines.join('\n'));
     return {
       kind: 'model_manage_models',
       source,
       reason: 'model manage models',
       modelOptions: modelManageModelsBlock.modelOptions,
+      capacityRows: capacitySnapshot?.rows || [],
       selectedOption: modelManageModelsBlock.selectedOption,
       fingerprint: fingerprintFromBlock(modelManageModelsBlock, modelManageModelsBlock.modelOptions.map((option) => option.canonical)),
       options: modelManageModelsBlock.options,
@@ -1644,26 +1889,16 @@ function detectSnapshotFromText(text, source) {
   const recentLines = rawLines.slice(-Math.max(12, DIALOG_BOTTOM_WINDOW_LINES));
   const recentTail = recentLines.join('\n');
   const usageLimitBlock = findUsageLimitMenuBlock(rawLines, menuBlocks, chatPromptActive);
-  const usagePatterns = [
-    /you(?:'ve| have)\s+(?:reached|hit)\s+(?:your\s+)?(?:usage|quota|request|rate)\s+limit/i,
-    /usage\s+limit\s+reached/i,
-    /you(?:'ve| have)\s+exhausted\s+your\s+capacity\s+on\s+this\s+model/i,
-    /quota\s+(?:reached|exceeded|used\s+up)/i,
-    /quota\s+will\s+reset\s+after/i,
-    /access\s+resets\s+at/i,
-    /\/stats(?:\s+model)?\s+for\s+usage\s+details/i,
-    /rate\s+limit\s+exceeded/i,
-    /try\s+again\s+(?:later|tomorrow)/i,
-    /come\s+back\s+(?:later|tomorrow)/i,
-  ];
+  const usagePatterns = usageLimitPatterns();
   if (usagePatterns.some((pattern) => pattern.test(recentTail))) {
     const keepOption = usageLimitBlock ? resolveCapacityKeepOption(usageLimitBlock.options) : null;
     const stopOption = usageLimitBlock ? resolveUsageLimitStopOption(usageLimitBlock.options) : null;
+    const usageLimitModel = usageLimitModelFromLines(rawLines);
     return {
       kind: 'usage_limit',
       source,
       reason: 'usage limit reached',
-      fingerprint: fingerprintFromLines(compactLines(recentTail), ['usage limit', 'quota', 'rate limit']),
+      fingerprint: fingerprintForUsageLimitEvent(rawLines),
       keepOption,
       keepOptionText: keepOption?.numberText || '',
       stopOption,
@@ -1673,6 +1908,9 @@ function detectSnapshotFromText(text, source) {
       blockStart: usageLimitBlock?.start,
       blockEnd: usageLimitBlock?.end,
       chatPromptActive,
+      promptInputText,
+      usageLimitPromptActive: hasChatPromptAfterUsageLimit(rawLines),
+      usageLimitModel,
       blockMode: usageLimitBlock?.mode,
     };
   }
@@ -1748,6 +1986,7 @@ function detectSnapshotFromText(text, source) {
       chatPromptActive,
       promptContext,
       promptFingerprint: promptContext,
+      promptInputText,
     });
   }
 
@@ -1827,6 +2066,118 @@ function findFallbackCapacityMenuBlock(rawLines, chatPromptActive, normalizedRec
     selectedOption,
     mode: selectedOption ? 'radio' : 'plain',
   };
+}
+
+function usageLimitPatterns() {
+  return [
+    /you(?:'ve| have)\s+(?:reached|hit)\s+(?:your\s+)?(?:usage|quota|request|rate)\s+limit/i,
+    /usage\s+limit\s+reached/i,
+    /you(?:'ve| have)\s+exhausted\s+your\s+capacity\s+on\s+this\s+model/i,
+    /quota\s+(?:reached|exceeded|used\s+up)/i,
+    /quota\s+will\s+reset\s+after/i,
+    /access\s+resets\s+at/i,
+    /\/stats(?:\s+model)?\s+for\s+usage\s+details/i,
+    /rate\s+limit\s+exceeded/i,
+    /try\s+again\s+(?:later|tomorrow)/i,
+    /come\s+back\s+(?:later|tomorrow)/i,
+  ];
+}
+
+function hasUsageLimitSignal(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  return usageLimitPatterns().some((pattern) => pattern.test(value));
+}
+
+function findLastUsageLimitAnchorIndex(rawLines) {
+  const patterns = usageLimitPatterns();
+  for (let index = rawLines.length - 1; index >= 0; index -= 1) {
+    const line = String(rawLines[index] || '');
+    if (patterns.some((pattern) => pattern.test(line))) return index;
+  }
+  return -1;
+}
+
+function hasChatPromptAfterUsageLimit(rawLines) {
+  const promptIndex = findLastChatPromptIndex(rawLines);
+  if (promptIndex < 0) return false;
+
+  const usageIndex = findLastUsageLimitAnchorIndex(rawLines);
+  return usageIndex >= 0 && promptIndex > usageIndex;
+}
+
+function findLastAuthRestartRequiredAnchorIndex(rawLines) {
+  const lines = Array.isArray(rawLines)
+    ? rawLines.map((line) => String(line || ''))
+    : String(rawLines || '').split('\n');
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = normalizeTerminalText(lines[index]).replace(/\s+/g, ' ').trim();
+    if (/press\s+r\s+to\s+restart/i.test(line) || /needs\s+to\s+be\s+restarted/i.test(line)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function hasChatPromptAfterAuthRestartRequired(rawLines) {
+  const promptIndex = findLastChatPromptIndex(rawLines);
+  if (promptIndex < 0) return false;
+
+  const authRestartIndex = findLastAuthRestartRequiredAnchorIndex(rawLines);
+  return authRestartIndex >= 0 && promptIndex > authRestartIndex;
+}
+
+function usageLimitModelFromLines(rawLines) {
+  const lines = Array.isArray(rawLines)
+    ? rawLines.map((line) => String(line || ''))
+    : String(rawLines || '').split('\n');
+  const usageIndex = findLastUsageLimitAnchorIndex(lines);
+  if (usageIndex < 0) return '';
+
+  return extractVisibleCurrentModel(lines.slice(0, usageIndex + 1).join('\n'));
+}
+
+function fingerprintForUsageLimitEvent(rawLines) {
+  const lines = Array.isArray(rawLines)
+    ? rawLines.map((line) => String(line || '').replace(/\s+$/g, ''))
+    : String(rawLines || '').split('\n').map((line) => line.replace(/\s+$/g, ''));
+  const usageIndex = findLastUsageLimitAnchorIndex(lines);
+  if (usageIndex < 0) {
+    return fingerprintFromLines(compactLines(lines.join('\n')), ['usage limit', 'quota', 'rate limit', 'capacity', 'exhausted']);
+  }
+
+  const usageModel = usageLimitModelFromLines(lines);
+  const contextStart = Math.max(0, usageIndex - 8);
+  const contextEnd = Math.min(lines.length, usageIndex + 8);
+  const contextLines = lines.slice(contextStart, contextEnd);
+  const eventFingerprint = fingerprintFromLines(compactLines(contextLines.join('\n')), [
+    'usage limit',
+    'quota',
+    'rate limit',
+    'capacity',
+    'exhausted',
+    'reset',
+    'access resets',
+  ]);
+
+  return [
+    'usage-limit',
+    normalizeModelIdentifier(usageModel),
+    eventFingerprint,
+  ].filter(Boolean).join('|');
+}
+
+function usageLimitSnapshotMatchesVisibleModel(snapshot) {
+  if (snapshot?.ignoreVisibleModelMismatch === true) return true;
+  const usageModel = String(snapshot?.usageLimitModel || '').trim();
+  if (!usageModel) return true;
+
+  const visibleModel = extractVisibleCurrentModel(currentScreenTerminalText())
+    || extractVisibleCurrentModel(currentVisibleTerminalText());
+  if (!visibleModel) return true;
+
+  return modelIdentifiersMatch(usageModel, visibleModel);
 }
 
 function makeSnapshot(kind, source = 'none', extra = {}) {
@@ -1930,6 +2281,7 @@ function normalizeLabel(text) {
 function isChatPromptLine(rawLine) {
   const trimmed = String(rawLine || '').trim();
   if (/^>\s*$/.test(trimmed) || /^>\s+.+/.test(trimmed)) return true;
+  if (/^[*•●◦○▪◆▶➜»›-]\s+\/\S+/u.test(trimmed)) return true;
 
   const normalized = normalizeLabel(trimmed.replace(/^[*•●◦○▪◆▶➜»›-]+\s*/u, ''));
   return normalized === 'type your message or @path/to/file' || normalized === 'type your message';
@@ -1947,6 +2299,66 @@ function findLastChatPromptIndex(rawLines) {
     }
   }
   return -1;
+}
+
+function extractPromptInputText(rawLines) {
+  const window = (Array.isArray(rawLines) ? rawLines : []).slice(-Math.max(4, CHAT_PROMPT_WINDOW_LINES + 2));
+  for (let index = window.length - 1; index >= 0; index -= 1) {
+    const trimmed = cleanPromptInputLine(window[index]);
+    if (!trimmed) continue;
+
+    const match = trimmed.match(/^(?:>|[*•●◦○▪◆▶➜»›-])\s*(.*)$/u);
+    if (!match) continue;
+
+    const parts = [String(match[1] || '').trim()];
+    for (let nextIndex = index + 1; nextIndex < window.length; nextIndex += 1) {
+      const continuation = cleanPromptInputLine(window[nextIndex]);
+      if (!continuation) continue;
+      if (isChatPromptLine(continuation)) break;
+      if (isDecorativePromptLine(continuation)) continue;
+      if (isLikelyCommandOutputPromptText(continuation)) break;
+      if (/^[*•●◦○▪◆▶➜»›-]\s+/u.test(continuation)) break;
+
+      if (/^\/\S+/.test(continuation) || isAutomationPromptInputLine(continuation)) {
+        parts.push(continuation.trim());
+        continue;
+      }
+      break;
+    }
+
+    const text = parts.join('\n').trim();
+    const normalized = normalizeLabel(text);
+    if (!text) return '';
+    if (normalized === 'type your message or @path/to/file' || normalized === 'type your message') return '';
+    if (isLikelyCommandOutputPromptText(text)) return '';
+    return text;
+  }
+  return '';
+}
+
+function cleanPromptInputLine(rawLine) {
+  return normalizeTerminalText(String(rawLine || ''))
+    .replace(/\s+$/g, '')
+    .trim();
+}
+
+function isLikelyCommandOutputPromptText(text) {
+  const trimmed = String(text || '')
+    .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/gu, '')
+    .trim();
+  if (!trimmed) return false;
+  if (/^[╭╰│┌└├┤┬┴┼─═║┃]/u.test(trimmed)) return true;
+
+  const normalized = normalizeLabel(trimmed);
+  if (!normalized) return false;
+  return normalized.startsWith('session stats')
+    || normalized.startsWith('interaction summary')
+    || normalized.startsWith('select model')
+    || normalized.startsWith('model usage')
+    || normalized.startsWith('workspace (/directory)')
+    || normalized.startsWith('gemini cli v')
+    || normalized.startsWith('signed in with google')
+    || normalized.startsWith('plan: gemini code assist');
 }
 
 function isDecorativePromptLine(rawLine) {
@@ -1996,9 +2408,12 @@ function findPermissionMenuBlock(rawLines, blocks, chatPromptActive) {
       context.includes('allow execution of') ||
       context.includes('action required') ||
       context.includes('toggle auto-edit') ||
-      context.includes('tip: toggle auto-edit');
+      context.includes('tip: toggle auto-edit') ||
+      context.includes('apply this change') ||
+      context.includes('apply these changes') ||
+      context.includes('modify with external editor');
     const hasSiblingPermissionOption = block.options.some((option) =>
-      /allow once|suggest changes|allow for this session|allow this command for all future sessions/.test(option.canonical)
+      /allow once|suggest changes|allow for this session|allow this command for all future sessions|modify with external editor/.test(option.canonical)
     );
     const hasSelectionCue = Boolean(block.selectedOption) || /[•●◦○▪◆▶➜»›]/u.test(block.contextLines.join('\n'));
 
@@ -2085,7 +2500,17 @@ function findModelManageModelListBlock(rawLines, blocks, chatPromptActive) {
   for (const block of blocks) {
     if (!isActionableDialogBlock(block, rawLines.length, chatPromptActive)) continue;
 
-    const modelOptions = block.options.filter((option) => /^(gemini-[a-z0-9.\-]+|auto \(gemini [^)]+\))$/i.test(option.canonical));
+    const modelOptions = block.options
+      .map((option) => {
+        const modelIdentifier = extractGeminiModelIdentifier(option.label || option.canonical);
+        const isAutoOption = /^auto \(gemini [^)]+\)/i.test(option.canonical);
+        if (!modelIdentifier && !isAutoOption) return null;
+        return {
+          ...option,
+          modelIdentifier: modelIdentifier || option.canonical,
+        };
+      })
+      .filter(Boolean);
     if (modelOptions.length < 2) continue;
 
     const context = block.contextLines.map((line) => normalizeLabel(line)).join(' | ');
@@ -2127,7 +2552,7 @@ function findCapacityMenuBlock(rawLines, blocks, chatPromptActive) {
 }
 
 function findUsageLimitMenuBlock(rawLines, blocks, chatPromptActive) {
-  for (const block of blocks) {
+  for (const block of [...blocks].reverse()) {
     if (!isActionableDialogBlock(block, rawLines.length, chatPromptActive)) continue;
 
     const context = block.contextLines.map((line) => normalizeLabel(line)).join(' | ');
@@ -2181,9 +2606,19 @@ function resolveUsageLimitStopOption(options) {
   if (matched) return matched;
 
   const explicitSecond = options.find((option) => option.numberText === '2');
-  if (explicitSecond) return explicitSecond;
+  if (explicitSecond && !isCapacityKeepOption(explicitSecond)) return explicitSecond;
 
-  return options.at(-1) || null;
+  const lastOption = options.at(-1) || null;
+  if (lastOption && !isCapacityKeepOption(lastOption)) return lastOption;
+
+  return null;
+}
+
+function isCapacityKeepOption(option) {
+  if (!option) return false;
+  const canonical = String(option.canonical || '').trim();
+  if (!canonical) return false;
+  return KEEP_LABELS.map(normalizeLabel).filter(Boolean).some((label) => canonical === label || canonical.includes(label));
 }
 
 function findMenuOption(options, labels) {
@@ -2263,6 +2698,9 @@ function fingerprintFromBlock(block, anchors) {
 
 function updateCurrentSnapshot(next) {
   const prev = currentSnapshot;
+  trackLastUserPromptTransition(prev, next);
+  trackUsageLimitDismissalTransition(prev, next);
+  clearInitialPromptSubmittedFingerprintIfReturned(next);
   if (prev.kind !== next.kind || prev.fingerprint !== next.fingerprint) {
     currentSnapshot = next;
     stateGeneration += 1;
@@ -2282,6 +2720,49 @@ function updateCurrentSnapshot(next) {
     return;
   }
   currentSnapshot = next;
+}
+
+function trackUsageLimitDismissalTransition(prev, next) {
+  if (prev?.kind === 'usage_limit' && !pendingPromptCommand) {
+    pendingPostUsageLimitAdvance = {
+      reason: `Usage limit reached on ${currentModel()}`,
+      usageLimitModel: String(prev?.usageLimitModel || '').trim(),
+      armedAt: Date.now(),
+    };
+  }
+
+  const capacityKinds = new Set(['capacity_menu', 'capacity_continue', 'capacity_info']);
+  if (capacityKinds.has(prev?.kind) && !capacityKinds.has(next?.kind) && !pendingPromptCommand) {
+    pendingPostCapacityAdvance = {
+      reason: `Capacity limit reached on ${currentModel()}`,
+      armedAt: Date.now(),
+    };
+  }
+}
+
+function trackLastUserPromptTransition(prev, next) {
+  if (!sentInitialPrompt) return;
+  if (pendingPromptCommand) return;
+  const prevText = String(prev?.promptInputText || '').trim();
+  if (!prevText) return;
+  if (prev?.kind !== 'normal' || next?.kind !== 'normal') return;
+  const nextText = String(next?.promptInputText || '').trim();
+  if (nextText) return;
+  if (!next?.chatPromptActive) return;
+  if (prevText.startsWith('/')) return;
+  if (prevText === lastUserPrompt) return;
+  lastUserPrompt = prevText;
+  if (DEBUG_AUTOMATION) {
+    console.error(`[${FLAVOR_LABEL}][prompt] captured lastUserPrompt (${prevText.length} chars)`);
+  }
+}
+
+function clearInitialPromptSubmittedFingerprintIfReturned(next) {
+  if (!initialPromptSubmittedFingerprint) return;
+  const promptFingerprint = String(next?.promptFingerprint || next?.fingerprint || '').trim();
+  if (next?.kind !== 'normal' || !next?.chatPromptActive || (promptFingerprint && promptFingerprint !== initialPromptSubmittedFingerprint)) {
+    initialPromptSubmittedFingerprint = '';
+  }
 }
 
 class VirtualScreen {
@@ -2581,20 +3062,24 @@ function maybeAutomate(runId, snapshot) {
   const responders = [
     handleTrustFolderSnapshot,
     handlePermissionSnapshot,
+    handleAuthRestartRequiredSnapshot,
     handlePendingPromptCommand,
     handleModelManageRoutingSnapshot,
     handleModelManageModelsSnapshot,
+    handlePostUsageLimitAdvance,
+    handlePostCapacityAdvance,
     handleUsageLimitSnapshot,
     handleCapacityMenuSnapshot,
     handleCapacityContinueSnapshot,
     handleYesNoSnapshot,
+    handleStartupCommandRequeue,
     handleInitialPrompt,
     handleAlwaysPromptSnapshot,
   ];
 
   for (const responder of responders) {
     if (responder(runId, snapshot)) {
-      scheduleStaticRecheck();
+      if (!staticRecheckTimer) scheduleStaticRecheck();
       return;
     }
   }
@@ -2611,18 +3096,36 @@ function handleInitialPrompt(runId, snapshot) {
     initialPromptPendingSince = 0;
     return false;
   }
-  if (startupStatsBlockedReason) {
+  if (pendingPromptCommand) {
+    scheduleInitialPromptRetry(runId, `waiting for ${pendingPromptCommand.label || pendingPromptCommand.kind || 'pending command'}`);
+    return true;
+  }
+  if (startupStatsBlockedReason && startupStatsBlocksInitialPrompt) {
+    clearInitialPromptTimer();
+    initialPromptPendingSince = 0;
+    return false;
+  }
+  if (authHandoffInProgress || authRestartTelemetryPending || suppressInitialPromptForAuthRestart) {
     clearInitialPromptTimer();
     initialPromptPendingSince = 0;
     return false;
   }
   if (snapshot.kind !== 'normal') return false;
 
+  const promptInputText = String(snapshot?.promptInputText || '').trim();
+  if (promptInputText) {
+    if (isLikelyAutomationPromptInput(promptInputText)) {
+      return queueStartupPromptInputClear('stale automated prompt input before initial prompt');
+    }
+    scheduleInitialPromptRetry(runId, 'waiting for prompt field to clear');
+    return true;
+  }
+
   if (initialPromptPendingSince === 0) {
     initialPromptPendingSince = Date.now();
   }
 
-  if (shouldRequireStartupStatsBeforeInitialPrompt() && !startupStatsObserved) {
+  if (shouldDelayInitialPromptForStartupStats()) {
     scheduleInitialPromptRetry(runId, 'awaiting startup session stats');
     return true;
   }
@@ -2636,6 +3139,11 @@ function handleInitialPrompt(runId, snapshot) {
   const waitedForMs = Date.now() - initialPromptPendingSince;
   const canSendWithoutVisiblePrompt = quietForMs >= INITIAL_PROMPT_SETTLE_MS || waitedForMs >= INITIAL_PROMPT_MAX_WAIT_MS;
 
+  if (!snapshot.chatPromptActive && !hasInitialPromptReadySurface(snapshot) && waitedForMs < INITIAL_PROMPT_MAX_WAIT_MS) {
+    scheduleInitialPromptRetry(runId, 'awaiting prompt surface');
+    return true;
+  }
+
   if (!snapshot.chatPromptActive && !canSendWithoutVisiblePrompt) {
     scheduleInitialPromptRetry(runId, 'awaiting prompt field');
     return true;
@@ -2647,20 +3155,36 @@ function handleInitialPrompt(runId, snapshot) {
       ? `settled normal screen (${quietForMs}ms quiet)`
       : `prompt timeout (${waitedForMs}ms)`;
 
-  return sendInitialPrompt(runId, sendReason);
+  return sendInitialPrompt(runId, sendReason, snapshot);
+}
+
+function hasInitialPromptReadySurface(snapshot = currentSnapshot) {
+  if (snapshot?.chatPromptActive) return true;
+
+  const screenText = [
+    currentScreenTerminalText(),
+    currentVisibleTerminalText(),
+    normalizedTail.slice(-2000),
+  ]
+    .join('\n')
+    .trim();
+  if (!screenText) return false;
+
+  return /type\s+your\s+message/i.test(screenText)
+    || /\?\s*for\s+shortcuts/i.test(screenText)
+    || /workspace[\s\S]{0,160}\/model/i.test(screenText)
+    || />\s*$/.test(screenText);
 }
 
 function handleAlwaysPromptSnapshot(runId, snapshot) {
-  if (AUTO_CONTINUE_MODE !== 'always') return false;
-  if (snapshot.kind !== 'normal' || !snapshot.chatPromptActive) return false;
-  if (!continueLoopArmed) return false;
-  if (!snapshot.promptFingerprint) return false;
+  if (!shouldAutoContinuePrompt(snapshot)) return false;
+  const command = selectedAutoContinueCommand(snapshot);
 
   return schedulePromptCommand(runId, snapshot, {
     kind: 'continue',
-    text: CONTINUE_COMMAND,
-    reason: 'auto-continue prompt',
-    label: CONTINUE_COMMAND,
+    text: command.text,
+    reason: command.reason,
+    label: command.label,
     promptFingerprint: snapshot.promptFingerprint,
   });
 }
@@ -2678,11 +3202,177 @@ function handleYesNoSnapshot(runId, snapshot) {
   return false;
 }
 
+function handleStartupCommandRequeue(runId, snapshot) {
+  if (!shouldRequeueStartupCommand(snapshot)) return false;
+
+  const nextStartupCommand = buildNextStartupCommand();
+  if (!nextStartupCommand) return false;
+
+  if (hasPendingSubmitEnter()) {
+    scheduleStaticRecheck(QUICK_RECHECK_MS);
+    return true;
+  }
+
+  const promptInputText = promptInputTextFromSnapshot(snapshot);
+  if (promptInputText) {
+    if (isLikelyAutomationPromptInput(promptInputText)) {
+      console.error(`\n[${FLAVOR_LABEL}] Startup sequence: clearing stale prompt input before requeueing ${nextStartupCommand.label || nextStartupCommand.text}.\n`);
+      return queueStartupPromptInputClear('stale automated prompt input before startup requeue', nextStartupCommand);
+    }
+    return false;
+  }
+
+  pendingPromptCommand = nextStartupCommand;
+  console.error(`\n[${FLAVOR_LABEL}] Startup sequence: requeued (${pendingPromptCommand.label || pendingPromptCommand.text}) after prompt recovery.\n`);
+  handlePendingPromptCommand(runId, snapshot);
+  return true;
+}
+
+function isLikelyAutomationPromptInput(text) {
+  const normalized = String(text || '').trim();
+  if (!normalized) return false;
+
+  return automationPromptCommands().some((command) => normalized === command || normalized.startsWith(command));
+}
+
+function promptInputTextFromSnapshot(snapshot) {
+  return String(snapshot?.promptInputText || '').trim();
+}
+
+function queueStartupPromptInputClear(reason = 'startup prompt input clear', resumeCommand = null) {
+  if (!activePty) return false;
+
+  clearPromptCommandTimer();
+  clearInitialPromptTimer();
+  clearPendingPromptCommandNudgeTimer();
+  sendStartupPromptInputClearSequence(reason);
+  pendingPromptCommand = {
+    kind: 'startup-input-clear-finalize',
+    reason,
+    resumeCommand,
+    createdAt: Date.now(),
+    clearSentAt: Date.now(),
+    clearAttempts: 1,
+    hardClearSentAt: 0,
+  };
+  scheduleStaticRecheck(QUICK_RECHECK_MS);
+  return true;
+}
+
+function sendStartupPromptInputClearSequence(reason = 'startup prompt input clear', options = {}) {
+  const hard = options.hard === true;
+  return sendRaw(hard ? '\x03' : '\x1B\x15', hard ? `${reason}:interrupt-clear` : reason);
+}
+
+function automationPromptCommands() {
+  return [
+    CONTINUE_COMMAND,
+    CONTINUE_FALLBACK_COMMAND,
+    STARTUP_CLEAR_COMMAND,
+    STARTUP_STATS_COMMAND,
+    STATS_SESSION_FALLBACK_COMMAND,
+    STARTUP_MODEL_COMMAND,
+    MODEL_MANAGE_COMMAND,
+    AUTH_COMMAND,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function isAutomationPromptInputLine(text) {
+  const line = String(text || '').trim();
+  if (!line) return false;
+  return automationPromptCommands().some((command) => line === command || line.startsWith(`${command} `));
+}
+
+function automationPromptInputCommandLines(text) {
+  return String(text || '')
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter(isAutomationPromptInputLine);
+}
+
+function retryPendingStartupPromptCommandSubmitIfStuck(runId, command, snapshot, options = {}) {
+  if (!command || runId !== activeRunId || !activePty || !isAutomationActive()) return false;
+
+  const commandText = String(command.text || '').trim();
+  if (!commandText) return false;
+
+  const promptInputText = promptInputTextFromSnapshot(snapshot) || visibleSubmittedPromptInputText(commandText);
+  const commandLines = automationPromptInputCommandLines(promptInputText);
+  const containsCurrentCommandLine = commandLines.some((line) => promptInputMatchesSubmittedPrompt(line, commandText));
+
+  if (commandLines.length > 1 && containsCurrentCommandLine) {
+    const resumeCommand = options.stackedResumeCommand || null;
+    console.error(`\n[${FLAVOR_LABEL}] Startup prompt input contains stacked automated commands; clearing before retrying ${command.label || commandText}.\n`);
+    return queueStartupPromptInputClear(
+      options.stackedClearReason || `stacked startup automated commands before ${command.label || commandText}`,
+      resumeCommand
+    );
+  }
+
+  if (!promptInputMatchesSubmittedPrompt(promptInputText, commandText)) return false;
+
+  const now = Date.now();
+  const retrySettlesAt = Number(command.submitRetrySettlesAt || 0);
+  if (Number.isFinite(retrySettlesAt) && retrySettlesAt > now) {
+    scheduleStaticRecheck(QUICK_RECHECK_MS);
+    return true;
+  }
+
+  const maxAttempts = Math.max(1, INITIAL_PROMPT_SUBMIT_RETRY_MAX);
+  const attempts = Number(command.submitRetryAttempts || 0);
+  if (attempts < maxAttempts) {
+    command.submitRetryAttempts = attempts + 1;
+    command.submitRetrySettlesAt = now + INITIAL_PROMPT_SUBMIT_CONFIRM_MS + PROMPT_SUBMIT_SETTLE_MS;
+    console.error(`\n[${FLAVOR_LABEL}] ${command.label || commandText} is still in the input field; retrying Enter (${command.submitRetryAttempts}/${maxAttempts}).\n`);
+    sendStartupPromptCommandSubmitRetry(runId, command.submitRetryAttempts, command.label || commandText);
+    scheduleStaticRecheck(INITIAL_PROMPT_SUBMIT_CONFIRM_MS);
+    return true;
+  }
+
+  if (typeof options.onExhausted === 'function') {
+    return options.onExhausted({
+      commandText,
+      maxAttempts,
+      promptInputText,
+    }) === true;
+  }
+
+  const resumeCommand = options.exhaustedResumeCommand || null;
+  console.error(`\n[${FLAVOR_LABEL}] ${command.label || commandText} stayed in the input field after ${maxAttempts} Enter retries; clearing it before continuing.\n`);
+  return queueStartupPromptInputClear(
+    options.exhaustedClearReason || `stuck startup slash command ${command.label || commandText}`,
+    resumeCommand
+  );
+}
+
+function sendStartupPromptCommandSubmitRetry(runId, attempt, label = 'startup command') {
+  if (runId !== activeRunId || !activePty || !isAutomationActive()) return false;
+  try {
+    if (attempt >= 2) {
+      activePty.write('\x1B');
+    }
+    activePty.write('\r');
+    return true;
+  } catch (error) {
+    console.error(`[warn] Failed to retry ${label} Enter: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+const PERMISSION_ACTION_TTL_MS = 4000;
 function handlePermissionSnapshot(runId, snapshot) {
   if (snapshot.kind !== 'permission') return false;
+  if (snapshot.chatPromptActive) return true;
   clearContinueTimer();
   clearPromptCommandTimer();
   if (!AUTO_ALLOW_SESSION_PERMISSIONS) return true;
+
+  const dedupeKey = `permission:${snapshot.fingerprint}:${snapshot.targetOptionText}`;
+  if (actionSeenRecently(dedupeKey, PERMISSION_ACTION_TTL_MS)) return true;
+  rememberAction(dedupeKey);
 
   return runMenuPlanForOption(runId, snapshot, snapshot.targetOption, 'allow-for-this-session');
 }
@@ -2696,18 +3386,130 @@ function handleTrustFolderSnapshot(runId, snapshot) {
   return runMenuPlanForOption(runId, snapshot, snapshot.targetOption, 'trust-folder');
 }
 
+function handleAuthRestartRequiredSnapshot(runId, snapshot) {
+  if (snapshot.kind !== 'auth_restart_required') return false;
+  clearContinueTimer();
+  clearPromptCommandTimer();
+  clearInitialPromptTimer();
+  clearMenuPlan();
+
+  authHandoffInProgress = false;
+  authRestartTelemetryPending = true;
+  suppressInitialPromptForAuthRestart = true;
+  sentInitialPrompt = true;
+  continueLoopArmed = false;
+
+  if (pendingPromptCommand?.kind === 'auth-restart-finalize') {
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    if (snapshot.chatPromptActive && waitedForMs >= PROMPT_COMMAND_SETTLE_MS) {
+      console.error(`\n[${FLAVOR_LABEL}] Account change telemetry: running ${STARTUP_STATS_COMMAND} -> ${STARTUP_MODEL_COMMAND} without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+      modelIndex = 0;
+      avoidProModelsForSession = false;
+      pendingPromptCommand = buildPostAuthTelemetryCommand();
+      if (!pendingPromptCommand) {
+        authRestartTelemetryPending = false;
+        return false;
+      }
+      recheckVisiblePrompt('post-auth telemetry');
+      return true;
+    }
+    if (waitedForMs >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+      console.error(`\n[${FLAVOR_LABEL}] Account change restart did not settle in time — relaunching Gemini CLI without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+      requestLauncherAction('restart');
+    }
+    return true;
+  }
+
+  console.error(`\n[${FLAVOR_LABEL}] Account change detected: authentication succeeded; restarting Gemini CLI without startup /clear.\n`);
+  sendRaw('R', 'auth-restart');
+  pendingPromptCommand = {
+    kind: 'auth-restart-finalize',
+    createdAt: Date.now(),
+  };
+  scheduleStaticRecheck(QUICK_RECHECK_MS);
+  return true;
+}
+
 function handlePendingPromptCommand(runId, snapshot) {
   if (!pendingPromptCommand) return false;
+  if (isPromptCommandSubmitSettling(pendingPromptCommand)) {
+    scheduleStaticRecheck(QUICK_RECHECK_MS);
+    return true;
+  }
+
+  if (confirmVisibleModelForPendingModelManageSwitch(pendingPromptCommand)) {
+    return false;
+  }
+
+  if (pendingPromptCommand.kind === 'startup-input-clear-finalize') {
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    const promptInputText = String(snapshot?.promptInputText || '').trim();
+    const settleMs = Math.max(40, PROMPT_COMMAND_SETTLE_MS);
+
+    if (waitedForMs < settleMs) return true;
+
+    if (promptInputText && waitedForMs < MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+      if (waitedForMs - (pendingPromptCommand.clearSentAt || 0) >= settleMs) {
+        const clearAttempts = Number(pendingPromptCommand.clearAttempts || 0);
+        const useHardClear = clearAttempts >= 3 && !pendingPromptCommand.hardClearSentAt;
+        sendStartupPromptInputClearSequence('startup-input-clear-retry', { hard: useHardClear });
+        pendingPromptCommand.clearSentAt = Date.now();
+        pendingPromptCommand.clearAttempts = clearAttempts + 1;
+        if (useHardClear) pendingPromptCommand.hardClearSentAt = Date.now();
+      }
+      return true;
+    }
+
+    if (promptInputText) {
+      setStartupStatsBlocked('startup prompt input could not be cleared before initial prompt injection');
+      return true;
+    }
+
+    const resumeCommand = pendingPromptCommand.resumeCommand || null;
+    pendingPromptCommand = resumeCommand;
+    if (resumeCommand) {
+      recheckVisiblePrompt('startup command after prompt input clear');
+      return true;
+    }
+    return false;
+  }
+  if (pendingPromptCommand.kind === 'auth-restart-finalize') {
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    if (snapshot.kind === 'auth_restart_required') return true;
+
+    if (snapshot.kind === 'normal' && (snapshot.chatPromptActive || waitedForMs >= PROMPT_COMMAND_SETTLE_MS)) {
+      console.error(`\n[${FLAVOR_LABEL}] Account change telemetry: running ${STARTUP_STATS_COMMAND} -> ${STARTUP_MODEL_COMMAND} without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+      modelIndex = 0;
+      avoidProModelsForSession = false;
+      pendingPromptCommand = buildPostAuthTelemetryCommand();
+      if (!pendingPromptCommand) {
+        authRestartTelemetryPending = false;
+        return false;
+      }
+      recheckVisiblePrompt('post-auth telemetry');
+      return true;
+    }
+
+    if (waitedForMs >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+      console.error(`\n[${FLAVOR_LABEL}] Account change restart did not settle in time — relaunching Gemini CLI without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+      requestLauncherAction('restart');
+      return true;
+    }
+
+    return true;
+  }
   if (pendingPromptCommand.kind === 'startup-clear-finalize') {
-    const settled = hasStartupClearSettled(snapshot, {
-      screenText: currentScreenTerminalText(),
-      visibleText: currentVisibleTerminalText(),
-      waitedForMs: Date.now() - (pendingPromptCommand.createdAt || 0),
-    });
+	    const settled = hasStartupClearSettled(snapshot, {
+	      screenText: currentScreenTerminalText(),
+	      visibleText: currentVisibleTerminalText(),
+	      waitedForMs: Date.now() - (pendingPromptCommand.createdAt || 0),
+	      submitSettlesAt: pendingPromptCommand.submitSettlesAt,
+	      submittedAt: pendingPromptCommand.submittedAt,
+	    });
     if (settled) {
       startupClearCompleted = true;
       console.error(`\n[${FLAVOR_LABEL}] Startup clear: completed (${pendingPromptCommand.detail || pendingPromptCommand.label || STARTUP_CLEAR_COMMAND})\n`);
-      pendingPromptCommand = buildStartupStatsCommand(currentGeminiCliCapabilities);
+      pendingPromptCommand = delayPromptCommandAfterSlashSubmit(buildNextStartupCommand());
       if (!pendingPromptCommand) return false;
       recheckVisiblePrompt('startup stats after clear');
       return true;
@@ -2719,18 +3521,28 @@ function handlePendingPromptCommand(runId, snapshot) {
     return true;
   }
   if (pendingPromptCommand.kind === 'startup-stats-finalize') {
-    const settled = hasStartupStatsCaptureSettled(snapshot, {
-      startupStatsObserved,
-      screenText: currentScreenTerminalText(),
-      visibleText: currentVisibleTerminalText(),
-      waitedForMs: Date.now() - (pendingPromptCommand.createdAt || 0),
-    });
+    if (retryPendingStartupPromptCommandSubmitIfStuck(runId, pendingPromptCommand, snapshot, {
+      stackedResumeCommand: buildStartupStatsCommand(),
+      stackedClearReason: 'stacked startup slash commands before session stats telemetry',
+      exhaustedResumeCommand: buildStartupModelCommand(),
+      exhaustedClearReason: 'startup stats command stayed in prompt input before model telemetry',
+    })) {
+      return true;
+    }
+
+	    const settled = hasStartupStatsCaptureSettled(snapshot, {
+	      startupStatsObserved,
+	      screenText: currentScreenTerminalText(),
+	      visibleText: currentVisibleTerminalText(),
+	      waitedForMs: Date.now() - (pendingPromptCommand.createdAt || 0),
+	      submitSettlesAt: pendingPromptCommand.submitSettlesAt,
+	    });
     if (settled) {
       const captureSummary = describeStartupStatsCapture(startupStatsSnapshot);
       console.error(`\n[${FLAVOR_LABEL}] Startup session stats: captured (${captureSummary})\n`);
       startupModelCapacityObserved = false;
       startupModelCapacitySnapshot = null;
-      pendingPromptCommand = buildStartupModelCommand();
+      pendingPromptCommand = delayPromptCommandAfterSlashSubmit(buildStartupModelCommand());
       if (!pendingPromptCommand) return false;
       recheckVisiblePrompt('startup model capacity after stats');
       return true;
@@ -2749,17 +3561,53 @@ function handlePendingPromptCommand(runId, snapshot) {
       const reason = startupStatsObserved
         ? `startup ${STARTUP_STATS_COMMAND} did not return to the chat prompt in time`
         : `startup ${STARTUP_STATS_COMMAND} output was not detected in time`;
-      if (shouldRequireStartupStatsBeforeInitialPrompt()) {
-        setStartupStatsBlocked(reason);
-      } else {
-        console.error(`\n[${FLAVOR_LABEL}] startup stats capture did not settle in time — continuing.\n`);
-        pendingPromptCommand = null;
-        return false;
-      }
+      setStartupStatsBlocked(reason, { blocksInitialPrompt: false });
+      startupModelCapacityObserved = false;
+      startupModelCapacitySnapshot = null;
+      const nextCommand = buildStartupModelCommand();
+      if (!nextCommand) return false;
+      return queueStartupPromptInputClear('startup stats command timed out before model telemetry', nextCommand);
     }
     return true;
   }
   if (pendingPromptCommand.kind === 'startup-model-finalize') {
+    if (retryPendingStartupPromptCommandSubmitIfStuck(runId, pendingPromptCommand, snapshot, {
+      stackedResumeCommand: buildStartupModelCommand(),
+      stackedClearReason: 'stacked startup slash commands before model telemetry',
+      exhaustedClearReason: 'startup model command stayed in prompt input before initial prompt',
+    })) {
+      return true;
+    }
+
+    if (MODEL_AUTO && pendingPromptCommand.autoModelSelectionAttempted && snapshot.kind === 'normal') {
+      const selectedLabel = pendingPromptCommand.autoModelSelectionTargetLabel || GEMINI_AUTO_MODEL || 'auto';
+      startupModelCapacityObserved = true;
+      startupModelCapacitySnapshot = startupModelCapacitySnapshot || {
+        currentModel: selectedLabel,
+        rows: [],
+        rawLines: [],
+      };
+      console.error(`\n[${FLAVOR_LABEL}] Startup auto model: selected ${selectedLabel}; continuing startup.\n`);
+      pendingPromptCommand = null;
+      return false;
+    }
+
+    if (MODEL_AUTO && !pendingPromptCommand.autoModelSelectionCompleted) {
+      const autoModelOption = resolveStartupAutoModelOption(snapshot);
+      if (autoModelOption) {
+        const selectedLabel = autoModelOption.label || autoModelOption.canonical || GEMINI_AUTO_MODEL || 'auto';
+        pendingPromptCommand.autoModelSelectionAttempted = true;
+        pendingPromptCommand.autoModelSelectionTargetLabel = selectedLabel;
+
+        if (!pendingPromptCommand.autoModelSelectionLogged) {
+          console.error(`\n[${FLAVOR_LABEL}] Startup auto model: selecting ${selectedLabel} from ${STARTUP_MODEL_COMMAND}.\n`);
+          pendingPromptCommand.autoModelSelectionLogged = true;
+        }
+
+        return runMenuPlanForOption(runId, snapshot, autoModelOption, 'startup-auto-model');
+      }
+    }
+
     captureStartupModelCapacityObservation();
     const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
     if (startupModelCapacityObserved && !pendingPromptCommand.closeSentAt) {
@@ -2778,28 +3626,169 @@ function handlePendingPromptCommand(runId, snapshot) {
         waitedForMs: Date.now() - pendingPromptCommand.closeSentAt,
       });
       if (closed) {
+        if (maybeAdvanceFromStartupModelCapacityBeforePrompt(snapshot)) {
+          return true;
+        }
         pendingPromptCommand = null;
+        if (authRestartTelemetryPending) {
+          authRestartTelemetryPending = false;
+          suppressInitialPromptForAuthRestart = false;
+          sentInitialPrompt = true;
+          continueLoopArmed = false;
+          console.error(`\n[${FLAVOR_LABEL}] Account change telemetry: captured refreshed /stats and /model capacity; startup /clear was skipped.\n`);
+        }
         return false;
       }
       if (Date.now() - pendingPromptCommand.closeSentAt >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
-        setStartupStatsBlocked(`startup ${STARTUP_MODEL_COMMAND} did not return to the chat prompt in time`);
+        setStartupStatsBlocked(`startup ${STARTUP_MODEL_COMMAND} did not return to the chat prompt in time`, { blocksInitialPrompt: false });
         return true;
       }
       return true;
     }
 
     if (waitedForMs >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
-      setStartupStatsBlocked(`startup ${STARTUP_MODEL_COMMAND} output was not detected in time`);
+      setStartupStatsBlocked(`startup ${STARTUP_MODEL_COMMAND} output was not detected in time`, { blocksInitialPrompt: false });
+      return queueStartupPromptInputClear('startup model command timed out before initial prompt');
+    }
+    return true;
+  }
+  if (pendingPromptCommand.kind === 'usage-limit-stop-finalize') {
+    clearContinueTimer();
+    clearPromptCommandTimer();
+
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    const reason = pendingPromptCommand.reason || `Usage limit reached on ${currentModel()}`;
+
+    if (snapshot.kind === 'usage_limit' && snapshot.usageLimitPromptActive && snapshot.chatPromptActive) {
+      if (!pendingPromptCommand.stopOptionSeenAt) {
+        console.error(`\n[${FLAVOR_LABEL}] ${reason} — selecting Stop before switching models.\n`);
+      }
+      pendingPromptCommand = null;
+      clearMenuPlan();
+      requestModelAdvanceOrFinish(reason, {
+        allowBackwardVisibleReconcile: false,
+        retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+        snapshot,
+      });
       return true;
+    }
+
+    if (snapshot.kind === 'usage_limit') {
+      if (snapshot.stopOption) {
+        if (!pendingPromptCommand.stopOptionSeenAt) {
+          pendingPromptCommand.stopOptionSeenAt = Date.now();
+          console.error(`\n[${FLAVOR_LABEL}] ${reason} — selecting Stop before switching models.\n`);
+        }
+        return runMenuPlanForOption(runId, snapshot, snapshot.stopOption, 'dismiss-usage-limit');
+      }
+
+      if (waitedForMs >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+        pendingPromptCommand = null;
+        clearMenuPlan();
+        requestModelAdvanceOrFinish(reason, {
+          forceRelaunch: true,
+          forceRelaunchDetail: 'usage limit screen has no Stop option',
+          allowBackwardVisibleReconcile: false,
+          retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+          snapshot,
+        });
+      }
+      return true;
+    }
+
+    if (snapshot.kind === 'normal' && (snapshot.chatPromptActive || waitedForMs >= PROMPT_COMMAND_SETTLE_MS)) {
+      pendingPromptCommand = null;
+      clearMenuPlan();
+      requestModelAdvanceOrFinish(reason, {
+        allowBackwardVisibleReconcile: false,
+        retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+        snapshot,
+      });
+      return true;
+    }
+
+    if (waitedForMs >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+      pendingPromptCommand = null;
+      clearMenuPlan();
+      requestModelAdvanceOrFinish(reason, {
+        forceRelaunch: true,
+        forceRelaunchDetail: 'usage limit Stop did not return to prompt',
+        allowBackwardVisibleReconcile: false,
+        retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+        snapshot,
+      });
+    }
+    return true;
+  }
+  if (adoptPendingModelSwitchTargetForUsageLimit(snapshot)) {
+    return false;
+  }
+  if (pendingPromptCommand.kind === 'model-switch-finalize') {
+    const targetModel = pendingPromptCommand.targetModel || '';
+    if (retryPendingStartupPromptCommandSubmitIfStuck(runId, pendingPromptCommand, snapshot, {
+      stackedResumeCommand: buildDirectModelSwitchCommand(
+        pendingPromptCommand.targetIndex,
+        pendingPromptCommand.advanceReason || pendingPromptCommand.reason || `model-switch ${pendingPromptCommand.targetModel || 'target model'}`,
+        MODELS,
+        {
+          retryInitialPromptAfterSwitch: pendingPromptCommand.retryInitialPromptAfterSwitch === true,
+        }
+      ),
+      stackedClearReason: 'stacked automated prompt input before model switch confirmation',
+      exhaustedClearReason: 'model switch command stayed in prompt input before confirmation',
+      onExhausted: ({ maxAttempts }) => relaunchPendingModelManageTarget(
+        `direct model switch to ${targetModel || 'target model'} stayed in prompt input after ${maxAttempts} Enter retries`
+      ),
+    })) {
+      return true;
+    }
+
+    const resolution = resolveDirectModelSwitchConfirmation(targetModel, {
+      screenText: currentScreenTerminalText(),
+      visibleText: currentVisibleTerminalText(),
+    });
+    if (resolution.confirmed) {
+      if (Number.isInteger(pendingPromptCommand.targetIndex)) {
+        modelIndex = pendingPromptCommand.targetIndex;
+      }
+      console.error(`\n[${FLAVOR_LABEL}] Model switch confirmed: ${resolution.observedModel || targetModel}.\n`);
+      const retryInitialPrompt = pendingPromptCommand.retryInitialPromptAfterSwitch === true;
+      pendingPromptCommand = null;
+      if (retryInitialPrompt) rearmInitialPromptAfterUsageLimitSwitch(targetModel);
+      return false;
+    }
+
+    if (Date.now() - (pendingPromptCommand.createdAt || 0) >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+      const observedDetail = resolution.observedModel
+        ? `; visible model is ${resolution.observedModel}`
+        : '; no current model was visible';
+      return relaunchPendingModelManageTarget(`direct model switch to ${targetModel || 'target model'} was not confirmed${observedDetail}`);
     }
     return true;
   }
   if (pendingPromptCommand.kind === 'model-manage-finalize') {
     if (snapshot.kind === 'normal' && snapshot.chatPromptActive) {
+      const targetModel = pendingPromptCommand.targetModel || '';
+      const resolution = resolveDirectModelSwitchConfirmation(targetModel, {
+        screenText: currentScreenTerminalText(),
+        visibleText: currentVisibleTerminalText(),
+      });
+      if (!resolution.confirmed) {
+        if (Date.now() - (pendingPromptCommand.createdAt || 0) >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
+          const observedDetail = resolution.observedModel
+            ? `; visible model is ${resolution.observedModel}`
+            : '; no current model was visible';
+          return relaunchPendingModelManageTarget(`model manage switch to ${targetModel || 'target model'} was not confirmed${observedDetail}`);
+        }
+        return true;
+      }
       if (Number.isInteger(pendingPromptCommand.targetIndex)) {
         modelIndex = pendingPromptCommand.targetIndex;
       }
+      console.error(`\n[${FLAVOR_LABEL}] Model switch confirmed: ${resolution.observedModel || targetModel}.\n`);
+      const retryInitialPrompt = pendingPromptCommand.retryInitialPromptAfterSwitch === true;
       pendingPromptCommand = null;
+      if (retryInitialPrompt) rearmInitialPromptAfterUsageLimitSwitch(targetModel);
     }
     return false;
   }
@@ -2821,6 +3810,16 @@ function handlePendingPromptCommand(runId, snapshot) {
 
   const canSendWithoutVisiblePrompt = canSendPromptCommandWithoutVisiblePrompt(pendingPromptCommand, snapshot);
   if (!snapshot.chatPromptActive && !canSendWithoutVisiblePrompt) {
+    if (pendingPromptCommand.kind === 'model-switch') {
+      const cancelOutcome = nudgeSpinnerForPendingModelSwitch();
+      if (cancelOutcome === 'sent') {
+        scheduleStaticRecheck(QUICK_RECHECK_MS);
+        return true;
+      }
+      if (cancelOutcome === 'exhausted') {
+        return relaunchPendingModelManageTarget('model-switch could not cancel Gemini CLI thinking spinner');
+      }
+    }
     if (pendingPromptCommand.kind !== 'startup-stats' && pendingPromptCommand.kind !== 'stats-session') {
       clearPromptCommandTimer();
     }
@@ -2832,6 +3831,141 @@ function handlePendingPromptCommand(runId, snapshot) {
   }
 
   return schedulePromptCommand(runId, snapshot, pendingPromptCommand);
+}
+
+function adoptPendingModelSwitchTargetForUsageLimit(snapshot) {
+  if (snapshot?.kind !== 'usage_limit') return false;
+  const resolution = resolvePendingModelSwitchTargetForUsageLimit(pendingPromptCommand);
+  if (!resolution) return false;
+
+  const switchConfirmation = resolveDirectModelSwitchConfirmation(resolution.targetModel, {
+    screenText: currentScreenTerminalText(),
+    visibleText: currentVisibleTerminalText(),
+  });
+  if (switchConfirmation.confirmed) {
+    modelIndex = resolution.targetIndex;
+    const confirmedModel = switchConfirmation.observedModel || resolution.targetModel || currentModel();
+    const retryInitialPrompt = pendingPromptCommand.retryInitialPromptAfterSwitch === true;
+    pendingPromptCommand = null;
+    console.error(`\n[${FLAVOR_LABEL}] Model switch confirmed: ${confirmedModel}.\n`);
+    if (retryInitialPrompt) rearmInitialPromptAfterUsageLimitSwitch(confirmedModel);
+    return true;
+  }
+
+  if (!usageLimitSnapshotMatchesVisibleModel(snapshot)) return false;
+  if (wasUsageLimitSnapshotHandledRecently(snapshot)) return false;
+
+  const pendingKind = String(pendingPromptCommand?.kind || '');
+  const adoptionGraceMs = Math.min(2500, MODEL_MANAGE_FLOW_TIMEOUT_MS);
+  if (pendingKind === 'model-switch') {
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    if (waitedForMs < adoptionGraceMs) return false;
+  }
+
+  const usageLimitModel = String(snapshot?.usageLimitModel || '').trim();
+  if (usageLimitModel && resolution.targetModel) {
+    if (!modelIdentifiersMatch(usageLimitModel, resolution.targetModel)) {
+      const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+      if (waitedForMs < adoptionGraceMs) return false;
+    }
+  }
+  if (!usageLimitModel) {
+    if (pendingKind !== 'model-switch-finalize') return false;
+    const waitedForMs = Date.now() - (pendingPromptCommand.createdAt || 0);
+    if (waitedForMs < MODEL_MANAGE_FLOW_TIMEOUT_MS) return false;
+  }
+
+  modelIndex = resolution.targetIndex;
+  snapshot.usageLimitModel = resolution.targetModel || snapshot.usageLimitModel;
+  snapshot.ignoreVisibleModelMismatch = true;
+  pendingPromptCommand = null;
+  console.error(`\n[${FLAVOR_LABEL}] Usage limit appeared while confirming ${resolution.targetModel || currentModel()}; treating that model as active for fallback.\n`);
+  return true;
+}
+
+function resolvePendingModelSwitchTargetForUsageLimit(command, models = MODELS) {
+  const kind = String(command?.kind || '');
+  if (kind !== 'model-switch-finalize' && kind !== 'model-manage-finalize') return null;
+
+  const chain = Array.isArray(models) ? models : [];
+  const targetIndex = command.targetIndex;
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= chain.length) return null;
+
+  const targetModel = command.targetModel || chain[targetIndex] || '';
+  return {
+    targetIndex,
+    targetModel,
+  };
+}
+
+function confirmVisibleModelForPendingModelManageSwitch(command) {
+  const kind = String(command?.kind || '').trim();
+  if (
+    kind !== 'model-manage-open' &&
+    kind !== 'model-manage-route' &&
+    kind !== 'model-manage-select'
+  ) {
+    return false;
+  }
+
+  const targetIndex = Number(command?.targetIndex);
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= MODELS.length) return false;
+
+  const observedModel = extractVisibleCurrentModel(currentScreenTerminalText())
+    || extractVisibleCurrentModel(currentVisibleTerminalText());
+  const observedIndex = findModelIndexByIdentifier(observedModel, MODELS);
+  if (observedIndex < targetIndex) return false;
+
+  modelIndex = observedIndex;
+  const confirmedModel = MODELS[observedIndex] || observedModel;
+  if (observedIndex !== targetIndex) {
+    const skipped = command.targetModel || MODELS[targetIndex] || 'target model';
+    const reason = command.advanceReason || command.reason || `Usage limit reached on ${skipped}`;
+    console.error(`\n[${FLAVOR_LABEL}] ${reason} — ${skipped} is at 100% usage; selecting ${confirmedModel} instead.\n`);
+  }
+  console.error(`\n[${FLAVOR_LABEL}] Model switch confirmed: ${observedModel || confirmedModel}.\n`);
+  const retryInitialPrompt = command.retryInitialPromptAfterSwitch === true;
+  pendingPromptCommand = null;
+  clearPromptCommandTimer();
+  clearPendingPromptCommandNudgeTimer();
+  if (retryInitialPrompt) rearmInitialPromptAfterUsageLimitSwitch(confirmedModel);
+  return true;
+}
+
+function resolveStartupAutoModelOption(snapshot) {
+  if (!MODEL_AUTO) return null;
+  const options = Array.isArray(snapshot?.options) ? snapshot.options : [];
+  const autoOptions = options.filter(isAutoModelMenuOption);
+  if (autoOptions.length === 0) return null;
+
+  const requested = normalizeLabel(GEMINI_AUTO_MODEL);
+  if (requested && requested !== 'auto') {
+    const requestedOption = autoOptions.find((option) => normalizeLabel(option.canonical) === requested)
+      || autoOptions.find((option) => normalizeLabel(option.label || '').includes(requested))
+      || autoOptions.find((option) => normalizeLabel(option.canonical).includes(requested));
+    if (requestedOption) return requestedOption;
+  }
+
+  const preferredFamily = preferredStartupAutoModelFamily();
+  if (preferredFamily) {
+    const familyOption = autoOptions.find((option) => normalizeLabel(option.canonical).includes(preferredFamily))
+      || autoOptions.find((option) => normalizeLabel(option.label || '').includes(preferredFamily));
+    if (familyOption) return familyOption;
+  }
+
+  return autoOptions[0] || null;
+}
+
+function isAutoModelMenuOption(option) {
+  const canonical = normalizeLabel(option?.canonical || option?.label || '');
+  return /^auto\s*\(\s*gemini\s+(?:3|2\.5)\s*\)/i.test(canonical);
+}
+
+function preferredStartupAutoModelFamily() {
+  const firstModel = String(MODELS.find((model) => String(model || '').trim()) || currentModel() || '').trim();
+  if (/^gemini-3\b/i.test(firstModel)) return 'gemini 3';
+  if (/^gemini-2\.5\b/i.test(firstModel)) return 'gemini 2.5';
+  return '';
 }
 
 function handleModelManageRoutingSnapshot(runId, snapshot) {
@@ -2850,6 +3984,8 @@ function handleModelManageRoutingSnapshot(runId, snapshot) {
     kind: 'model-manage-select',
     targetIndex: pendingPromptCommand.targetIndex,
     targetModel: pendingPromptCommand.targetModel,
+    advanceReason: pendingPromptCommand.advanceReason,
+    retryInitialPromptAfterSwitch: pendingPromptCommand.retryInitialPromptAfterSwitch === true,
     createdAt: Date.now(),
   };
   return runMenuPlanForOption(runId, snapshot, manualOption, 'model-manage-manual');
@@ -2857,13 +3993,19 @@ function handleModelManageRoutingSnapshot(runId, snapshot) {
 
 function handleModelManageModelsSnapshot(runId, snapshot) {
   if (snapshot.kind !== 'model_manage_models') return false;
-  if (pendingPromptCommand?.kind !== 'model-manage-select') return false;
+  const pendingKind = String(pendingPromptCommand?.kind || '');
+  const acceptedKinds = new Set([
+    'model-manage-select',
+    'model-manage-route',
+    'model-switch',
+    'model-switch-finalize',
+  ]);
+  if (!acceptedKinds.has(pendingKind)) return false;
   clearContinueTimer();
   clearPromptCommandTimer();
 
-  const targetModel = normalizeLabel(pendingPromptCommand.targetModel || '');
-  const targetOption = snapshot.modelOptions?.find((option) => option.canonical === targetModel)
-    || snapshot.modelOptions?.find((option) => option.canonical.includes(targetModel));
+  const targetResolution = resolveModelManageSelectionTarget(snapshot, pendingPromptCommand);
+  const targetOption = targetResolution?.option || null;
 
   if (!targetOption) {
     if (Date.now() - (pendingPromptCommand.createdAt || 0) >= MODEL_MANAGE_FLOW_TIMEOUT_MS) {
@@ -2872,26 +4014,312 @@ function handleModelManageModelsSnapshot(runId, snapshot) {
     return true;
   }
 
+  if (targetResolution.targetIndex !== pendingPromptCommand.targetIndex) {
+    const skipped = pendingPromptCommand.targetModel || MODELS[pendingPromptCommand.targetIndex] || 'target model';
+    const reason = pendingPromptCommand.advanceReason || pendingPromptCommand.reason || `Usage limit reached on ${currentModel()}`;
+    console.error(`\n[${FLAVOR_LABEL}] ${reason} — ${skipped} is at 100% usage; selecting ${targetResolution.targetModel} instead.\n`);
+  }
+
   pendingPromptCommand = {
     kind: 'model-manage-finalize',
-    targetIndex: pendingPromptCommand.targetIndex,
-    targetModel: pendingPromptCommand.targetModel,
+    targetIndex: targetResolution.targetIndex,
+    targetModel: targetResolution.targetModel,
+    advanceReason: pendingPromptCommand.advanceReason,
+    retryInitialPromptAfterSwitch: pendingPromptCommand.retryInitialPromptAfterSwitch === true,
     createdAt: Date.now(),
   };
   return runMenuPlanForOption(runId, snapshot, targetOption, 'model-manage-select');
 }
 
+function resolveModelManageSelectionTarget(snapshot, command) {
+  const modelOptions = Array.isArray(snapshot?.modelOptions) ? snapshot.modelOptions : [];
+  if (modelOptions.length === 0) return null;
+
+  const capacityRows = Array.isArray(snapshot?.capacityRows) ? snapshot.capacityRows : [];
+  const targetIndex = Number(command?.targetIndex);
+  const targetModel = command?.targetModel || (Number.isInteger(targetIndex) ? MODELS[targetIndex] : '');
+  const directOption = findModelManageOptionForModel(modelOptions, targetModel);
+
+  if (!isModelAtFullCapacity(targetModel, capacityRows) && directOption) {
+    return {
+      targetIndex,
+      targetModel,
+      option: directOption,
+    };
+  }
+
+  const fallbackStart = Number.isInteger(targetIndex) ? targetIndex - 1 : modelIndex;
+  const fallbackIndex = findNextEligibleModelIndexInChain(MODELS, fallbackStart, {
+    avoidProModels: avoidProModelsForSession,
+    avoidFullCapacityModels: true,
+    capacityRows,
+    requireFallbackDowngrade: true,
+    fallbackFromModel: targetModel,
+  });
+
+  if (fallbackIndex >= 0) {
+    const fallbackModel = MODELS[fallbackIndex];
+    const fallbackOption = findModelManageOptionForModel(modelOptions, fallbackModel);
+    if (fallbackOption) {
+      return {
+        targetIndex: fallbackIndex,
+        targetModel: fallbackModel,
+        option: fallbackOption,
+      };
+    }
+  }
+
+  return directOption
+    ? {
+      targetIndex,
+      targetModel,
+      option: directOption,
+    }
+    : null;
+}
+
+function maybeAdvanceFromStartupModelCapacityBeforePrompt(snapshot) {
+  if (!GEMINI_INITIAL_PROMPT || sentInitialPrompt) return false;
+  if (authHandoffInProgress || authRestartTelemetryPending || suppressInitialPromptForAuthRestart) return false;
+
+  const resolution = resolveStartupModelCapacityFallbackTarget(startupModelCapacitySnapshot);
+  if (!resolution) return false;
+
+  const fromModel = resolution.fromModel || currentModel();
+  const reason = `Startup model capacity shows ${fromModel} is at 100% usage`;
+  pendingPromptCommand = null;
+  const result = requestModelAdvanceOrFinish(reason, {
+    allowBackwardVisibleReconcile: false,
+    avoidFullCapacityModels: true,
+    capacityRows: resolution.capacityRows,
+    fallbackFromModel: fromModel,
+    requireFallbackDowngrade: true,
+    retryInitialPromptAfterSwitch: false,
+    snapshot,
+  });
+
+  return result !== 'transitioning';
+}
+
+function resolveStartupModelCapacityFallbackTarget(capacitySnapshot, models = MODELS) {
+  const rows = Array.isArray(capacitySnapshot?.rows) ? capacitySnapshot.rows : [];
+  if (rows.length === 0) return null;
+
+  const snapshotModel = String(capacitySnapshot?.currentModel || '').trim();
+  const fromModel = snapshotModel || currentModel();
+  if (!isStartupCurrentModelAtFullCapacity(fromModel, rows)) return null;
+
+  const fromIndex = findModelIndexByIdentifier(fromModel, models);
+  if (fromIndex >= 0) modelIndex = fromIndex;
+
+  const targetIndex = findNextEligibleModelIndexInChain(models, fromIndex >= 0 ? fromIndex : modelIndex, {
+    avoidProModels: avoidProModelsForSession,
+    avoidFullCapacityModels: true,
+    capacityRows: rows,
+    requireFallbackDowngrade: true,
+    fallbackFromModel: fromModel,
+  });
+
+  return {
+    fromModel,
+    fromIndex,
+    targetIndex,
+    targetModel: targetIndex >= 0 ? models[targetIndex] : '',
+    capacityRows: rows,
+  };
+}
+
+function isStartupCurrentModelAtFullCapacity(model, rows = []) {
+  const row = findStartupCapacityRowForCurrentModel(model, rows);
+  if (!row) return false;
+  return Number(row.usedPercentage) >= 100;
+}
+
+function findStartupCapacityRowForCurrentModel(model, rows = []) {
+  return findCapacityRowForModel(model, rows)
+    || rows.find((row) => capacityRowLabelMatchesModelTier(row?.model, model))
+    || null;
+}
+
+function capacityRowLabelMatchesModelTier(rowModel, model) {
+  const rowLabel = normalizeCapacityModelLabel(rowModel);
+  if (!rowLabel) return false;
+  return startupCapacityModelTierLabels(model).includes(rowLabel);
+}
+
+function normalizeCapacityModelLabel(value) {
+  return normalizeLabel(String(value || '').replace(/[-_]+/g, ' '));
+}
+
+function startupCapacityModelTierLabels(model) {
+  const normalized = normalizeModelIdentifier(model);
+  if (!normalized) return [];
+  if (/\bflash-lite\b/.test(normalized) || /\blite\b/.test(normalized)) {
+    return ['flash lite', 'flashlite', 'lite'];
+  }
+  if (/\bflash\b/.test(normalized)) return ['flash'];
+  if (/\bpro\b/.test(normalized)) return ['pro'];
+  return [];
+}
+
+function findModelManageOptionForModel(modelOptions, model) {
+  const target = String(model || '').trim();
+  if (!target) return null;
+  return modelOptions.find((option) => modelIdentifiersMatch(option.modelIdentifier || option.canonical, target))
+    || modelOptions.find((option) => normalizeLabel(option.canonical).includes(normalizeLabel(target)))
+    || null;
+}
+
+function handlePostUsageLimitAdvance(runId, snapshot) {
+  if (!pendingPostUsageLimitAdvance) return false;
+  if (snapshot.kind !== 'normal' || !snapshot.chatPromptActive) return false;
+  if (pendingPromptCommand) return false;
+  if (authHandoffInProgress || authRestartTelemetryPending) {
+    pendingPostUsageLimitAdvance = null;
+    return false;
+  }
+  if (lastExistingUsageLimitHandlerAt > 0 && Date.now() - lastExistingUsageLimitHandlerAt < SAFETY_NET_DEBOUNCE_MS) {
+    pendingPostUsageLimitAdvance = null;
+    return false;
+  }
+
+  const armed = pendingPostUsageLimitAdvance;
+  pendingPostUsageLimitAdvance = null;
+
+  if (!automationEnabled && AUTO_DISABLE_ON_USAGE_LIMIT) {
+    setAutomationEnabled(true, 'usage_limit_recovery');
+  }
+  if (!canAutoAdvanceUsageLimitModelChain()) return false;
+
+  if (armed.usageLimitModel) {
+    reconcileModelIndexFromUsageLimitModel(armed.usageLimitModel, 'post-usage-limit advance');
+  }
+
+  return advanceModelChainOrAuth(armed.reason, snapshot);
+}
+
+let lastSafetyNetAdvanceAt = 0;
+let lastSafetyNetAdvanceFromModel = '';
+function advanceModelChainOrAuth(reason, snapshot) {
+  const fromModel = currentModel();
+  const now = Date.now();
+  if (lastSafetyNetAdvanceFromModel === fromModel && now - lastSafetyNetAdvanceAt < SAFETY_NET_DEBOUNCE_MS) {
+    return false;
+  }
+  lastSafetyNetAdvanceFromModel = fromModel;
+  lastSafetyNetAdvanceAt = now;
+
+  const nextIndex = findNextEligibleModelIndex(modelIndex);
+  if (nextIndex < 0) {
+    console.error(`\n[${FLAVOR_LABEL}] ${reason} — no fallback models in chain.\n`);
+    handleModelChainExhausted(reason, { snapshot });
+    return true;
+  }
+
+  console.error(`\n[${FLAVOR_LABEL}] ${reason} — switching to ${MODELS[nextIndex]} via direct /model command.\n`);
+  if (!queueDirectModelSwitchCommand(nextIndex, reason, { retryInitialPromptAfterSwitch: true })) {
+    handleModelChainExhausted(reason, { snapshot });
+    return true;
+  }
+  scheduleStaticRecheck(QUICK_RECHECK_MS);
+  return true;
+}
+
+function handlePostCapacityAdvance(runId, snapshot) {
+  if (!pendingPostCapacityAdvance) return false;
+  if (snapshot.kind !== 'normal' || !snapshot.chatPromptActive) return false;
+  if (pendingPromptCommand) return false;
+  if (authHandoffInProgress || authRestartTelemetryPending) {
+    pendingPostCapacityAdvance = null;
+    return false;
+  }
+  if (NEVER_SWITCH || !automationEnabled) {
+    pendingPostCapacityAdvance = null;
+    return false;
+  }
+
+  const armed = pendingPostCapacityAdvance;
+  pendingPostCapacityAdvance = null;
+
+  return advanceModelChainOrAuth(armed.reason, snapshot);
+}
+
 function handleUsageLimitSnapshot(runId, snapshot) {
   if (snapshot.kind !== 'usage_limit') return false;
+
+  const inFlightSwitchKinds = new Set([
+    'model-switch',
+    'model-switch-finalize',
+    'usage-limit-stop-finalize',
+    'auth',
+    'auth-restart-finalize',
+  ]);
+  if (pendingPromptCommand && inFlightSwitchKinds.has(String(pendingPromptCommand.kind || ''))) {
+    return false;
+  }
+
+  lastExistingUsageLimitHandlerAt = Date.now();
   clearContinueTimer();
   clearPromptCommandTimer();
   clearStaticRecheckTimer();
+  continueLoopArmed = false;
+  reconcileModelIndexFromVisibleTerminal('usage limit handling', { allowBackward: false });
+  if (!usageLimitSnapshotMatchesVisibleModel(snapshot)) return false;
 
-  if (canAutoAdvanceModelChain()) {
-    requestModelAdvanceOrFinish(`Usage limit reached on ${currentModel()}`);
-    if (snapshot.stopOption) {
+  if (canAutoAdvanceUsageLimitModelChain()) {
+    if (wasUsageLimitSnapshotHandledRecently(snapshot)) return false;
+    markUsageLimitSnapshotHandled(snapshot);
+
+    const forceRelaunch = shouldRelaunchForBlockedUsageLimit(snapshot);
+    const reason = `Usage limit reached on ${currentModel()}`;
+
+    if (snapshot.stopOption && !forceRelaunch) {
+      const nextIndex = findNextEligibleModelIndex(modelIndex);
+      pendingPromptCommand = {
+        kind: 'usage-limit-stop-finalize',
+        reason,
+        targetIndex: nextIndex >= 0 ? nextIndex : undefined,
+        targetModel: nextIndex >= 0 ? MODELS[nextIndex] : '',
+        createdAt: Date.now(),
+      };
+      clearPendingPromptCommandNudgeTimer();
+      console.error(`\n[${FLAVOR_LABEL}] ${reason} — selecting Stop before switching models.\n`);
       return runMenuPlanForOption(runId, snapshot, snapshot.stopOption, 'dismiss-usage-limit');
     }
+
+    if (shouldSwitchImmediatelyForPromptUsageLimit(snapshot)) {
+      requestModelAdvanceOrFinish(reason, {
+        allowBackwardVisibleReconcile: false,
+        retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+        snapshot,
+      });
+      clearMenuPlan();
+      return true;
+    }
+
+    if (forceRelaunch) {
+      const nextIndex = findNextEligibleModelIndex(modelIndex);
+      pendingPromptCommand = {
+        kind: 'usage-limit-stop-finalize',
+        reason,
+        targetIndex: nextIndex >= 0 ? nextIndex : undefined,
+        targetModel: nextIndex >= 0 ? MODELS[nextIndex] : '',
+        createdAt: Date.now(),
+      };
+      clearPendingPromptCommandNudgeTimer();
+      clearMenuPlan();
+      console.error(`\n[${FLAVOR_LABEL}] ${reason} — waiting for the usage-limit Stop option before switching models.\n`);
+      scheduleStaticRecheck(QUICK_RECHECK_MS);
+      return true;
+    }
+
+    requestModelAdvanceOrFinish(reason, {
+      forceRelaunch,
+      forceRelaunchDetail: forceRelaunch ? 'usage limit screen has no Stop option' : '',
+      allowBackwardVisibleReconcile: false,
+      retryInitialPromptAfterSwitch: shouldRetryInitialPromptAfterUsageLimit(),
+      snapshot,
+    });
     clearMenuPlan();
     return true;
   }
@@ -2902,6 +4330,17 @@ function handleUsageLimitSnapshot(runId, snapshot) {
     console.error(`\n[${FLAVOR_LABEL}] Usage limit detected — automation paused. ${hotkeySummary()}\n`);
   }
   return true;
+}
+
+function shouldRelaunchForBlockedUsageLimit(snapshot) {
+  if (snapshot?.kind !== 'usage_limit') return false;
+  return !snapshot?.stopOption;
+}
+
+function shouldSwitchImmediatelyForPromptUsageLimit(snapshot) {
+  if (snapshot?.kind !== 'usage_limit') return false;
+  if (snapshot?.stopOption) return false;
+  return Boolean(snapshot?.usageLimitPromptActive);
 }
 
 function handleCapacityMenuSnapshot(runId, snapshot) {
@@ -2915,6 +4354,11 @@ function handleCapacityMenuSnapshot(runId, snapshot) {
     autoContinueAttempts = 0;
   }
   lastCapacityAt = now;
+
+  if (!NEVER_SWITCH && snapshot.switchOption && demandHits >= KEEP_TRY_MAX && !hasAnotherModelInChain()) {
+    handleModelChainExhausted(`Capacity limit reached on ${currentModel()}`, { snapshot });
+    return true;
+  }
 
   let targetOption = snapshot.keepOption;
   let label = `keep-trying ${Math.min(demandHits + 1, KEEP_TRY_MAX)}/${KEEP_TRY_MAX}`;
@@ -2936,7 +4380,7 @@ function handleCapacityMenuSnapshot(runId, snapshot) {
   if (NEVER_SWITCH || !snapshot.switchOptionText) {
     if (demandHits > KEEP_TRY_MAX) {
       if (canAutoAdvanceModelChain()) {
-        requestModelAdvanceOrFinish(`Capacity limit reached on ${currentModel()}`);
+        requestModelAdvanceOrFinish(`Capacity limit reached on ${currentModel()}`, { snapshot });
         return true;
       }
       pauseAutomationTemporarily(AUTOMATION_COOLDOWN_MS, 'keep-trying loop limit reached');
@@ -2947,6 +4391,11 @@ function handleCapacityMenuSnapshot(runId, snapshot) {
 
   if (demandHits <= KEEP_TRY_MAX) {
     return runMenuPlanForOption(runId, snapshot, snapshot.keepOption, `keep-trying ${demandHits}/${KEEP_TRY_MAX}`);
+  }
+
+  if (!hasAnotherModelInChain()) {
+    handleModelChainExhausted(`Capacity limit reached on ${currentModel()}`, { snapshot });
+    return true;
   }
 
   switching = true;
@@ -3125,7 +4574,7 @@ function scheduleContinueRetry(runId, snapshot) {
   if (continueTimer) return;
   if (autoContinueAttempts >= AUTO_CONTINUE_MAX_PER_EVENT) {
     if (canAutoAdvanceModelChain() && snapshot.reason !== 'context window warning') {
-      requestModelAdvanceOrFinish(`Too many auto-continues for ${snapshot.reason}`);
+    requestModelAdvanceOrFinish(`Too many auto-continues for ${snapshot.reason}`, { snapshot });
       return;
     }
     pauseAutomationTemporarily(AUTOMATION_COOLDOWN_MS, `too many auto-continues for ${snapshot.reason}`);
@@ -3177,6 +4626,8 @@ function fallbackPendingModelManageFlow(reason) {
 
   const targetIndex = pendingPromptCommand.targetIndex;
   const targetModel = pendingPromptCommand.targetModel;
+  const advanceReason = pendingPromptCommand.advanceReason;
+  const retryInitialPromptAfterSwitch = pendingPromptCommand.retryInitialPromptAfterSwitch === true;
   if (!Number.isInteger(targetIndex) || !targetModel) {
     pendingPromptCommand = null;
     return false;
@@ -3189,6 +4640,8 @@ function fallbackPendingModelManageFlow(reason) {
     label: `/model set ${targetModel}`,
     targetIndex,
     targetModel,
+    advanceReason,
+    retryInitialPromptAfterSwitch,
     createdAt: Date.now(),
   };
   console.error(`\n[${FLAVOR_LABEL}] ${reason} — falling back to direct model switch for ${targetModel}.\n`);
@@ -3213,7 +4666,7 @@ function relaunchPendingModelManageTarget(reason) {
   return true;
 }
 
-function queueModelSwitchCommand(targetIndex, reason) {
+function queueModelSwitchCommand(targetIndex, reason, options = {}) {
   const index = Number(targetIndex);
   if (!Number.isInteger(index) || index < 0 || index >= MODELS.length) return false;
 
@@ -3223,9 +4676,15 @@ function queueModelSwitchCommand(targetIndex, reason) {
   }
 
   if (MODEL_SWITCH_MODE === 'manage') {
-    pendingPromptCommand = buildModelManageStarterCommand(index, targetModel, currentGeminiCliCapabilities);
-    if (!pendingPromptCommand) return false;
-    if (pendingPromptCommand.kind === 'stats-session') {
+    const command = buildModelManageStarterCommand(index, targetModel, currentGeminiCliCapabilities, {
+      advanceReason: reason,
+      retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
+    });
+    if (!command) return false;
+    clearPromptCommandTimer();
+    clearPendingPromptCommandNudgeTimer();
+    pendingPromptCommand = command;
+    if (command.kind === 'stats-session') {
       console.error(`\n[${FLAVOR_LABEL}] ${reason} — queueing /stats session and /model manage for ${targetModel}.\n`);
     } else {
       const skipReason = currentGeminiCliCapabilities.statsSessionAutomationDisabledReason || 'unsupported by this Gemini CLI build';
@@ -3234,19 +4693,51 @@ function queueModelSwitchCommand(targetIndex, reason) {
     return true;
   }
 
+  return queueDirectModelSwitchCommand(index, reason, options);
+}
+
+function queueDirectModelSwitchCommand(targetIndex, reason, options = {}) {
+  const index = Number(targetIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= MODELS.length) return false;
+
+  if (pendingPromptCommand?.targetIndex === index) {
+    return true;
+  }
+
+  const command = buildDirectModelSwitchCommand(index, reason, MODELS, {
+    advanceReason: reason,
+    retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
+  });
+  if (!command) return false;
+  clearPromptCommandTimer();
+  clearPendingPromptCommandNudgeTimer();
+  pendingPromptCommand = command;
+  console.error(`\n[${FLAVOR_LABEL}] ${reason} — queueing in-session switch to ${command.targetModel}.\n`);
+  return true;
+}
+
+function buildDirectModelSwitchCommand(targetIndex, reason, models = MODELS, options = {}) {
+  const index = Number(targetIndex);
+  const chain = Array.isArray(models) ? models : [];
+  if (!Number.isInteger(index) || index < 0 || index >= chain.length) return null;
+
+  const targetModel = String(chain[index] || '').trim();
+  if (!targetModel) return null;
+
   const text = buildModelSwitchCommand(targetModel);
-  if (!text) return false;
-  pendingPromptCommand = {
+  if (!text) return null;
+
+  return {
     kind: 'model-switch',
     text,
     reason: `model-switch ${targetModel}`,
     label: `/model set ${targetModel}`,
     targetIndex: index,
     targetModel,
+    advanceReason: options.advanceReason || reason,
+    retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
     createdAt: Date.now(),
   };
-  console.error(`\n[${FLAVOR_LABEL}] ${reason} — queueing in-session switch to ${targetModel}.\n`);
-  return true;
 }
 
 function schedulePromptCommand(runId, snapshot, command) {
@@ -3276,7 +4767,7 @@ function schedulePromptCommand(runId, snapshot, command) {
   if (actionSeenRecently(dedupeKey, ACTION_RETRY_MIN_MS)) return true;
 
   const quietForMs = Date.now() - lastTerminalDataAt;
-  const delay = Math.max(30, PROMPT_COMMAND_SETTLE_MS - quietForMs);
+  const delay = promptCommandScheduleDelay(command, snapshot, quietForMs);
   const label = command.label || text;
   scheduledPromptCommand = {
     kind: command.kind,
@@ -3288,6 +4779,7 @@ function schedulePromptCommand(runId, snapshot, command) {
     promptCommandTimer = null;
     scheduledPromptCommand = null;
     if (runId !== activeRunId || !activePty || !isAutomationActive()) return;
+    if (!isPromptCommandStillCurrent(command)) return;
 
     const latest = detectCurrentSnapshot();
     updateCurrentSnapshot(latest);
@@ -3297,20 +4789,30 @@ function schedulePromptCommand(runId, snapshot, command) {
     if (command.kind === 'continue' && latest.promptFingerprint !== promptFingerprint) return;
     if (command.kind === 'model-manage-open' && latest.kind !== 'normal' && latest.kind !== 'usage_limit') return;
 
-    if (command.kind === 'startup-clear' || command.kind === 'startup-stats' || command.kind === 'startup-model' || command.kind === 'stats-session') {
-      const quietForMs = Math.max(0, Date.now() - lastTerminalDataAt);
-      const waitedForMs = Math.max(0, Date.now() - Number(command.createdAt || Date.now()));
-      const sendReason = latest.chatPromptActive
-        ? 'visible prompt field'
-        : quietForMs >= PROMPT_COMMAND_SETTLE_MS
-          ? `settled normal screen (${quietForMs}ms quiet)`
-          : `prompt timeout (${waitedForMs}ms)`;
-      const prefix = command.kind === 'startup-clear' || command.kind === 'startup-stats' || command.kind === 'startup-model' ? 'startup ' : '';
-      console.error(`\n[${FLAVOR_LABEL}] Auto-sending ${prefix}${label} (${sendReason})...\n`);
+    const latestPromptInputText = promptInputTextFromSnapshot(latest);
+    if (requiresEmptyPromptInputForCommand(command)) {
+      if (hasPendingSubmitEnter()) {
+        scheduleStaticRecheck(QUICK_RECHECK_MS);
+        return;
+      }
+      if (latestPromptInputText) {
+        if (isLikelyAutomationPromptInput(latestPromptInputText)) {
+          queueStartupPromptInputClear(`stale automated prompt input before ${command.label || command.text || command.kind}`, command);
+        }
+        return;
+      }
     }
 
+    const promptCommandSendDetail = describePromptCommandSendDetail(command, latest);
+    if (promptCommandSendDetail) {
+      const prefix = command.kind === 'startup-clear' || command.kind === 'startup-stats' || command.kind === 'startup-model' ? 'startup ' : '';
+      console.error(`\n[${FLAVOR_LABEL}] Auto-sending ${prefix}${label} (${promptCommandSendDetail})...\n`);
+    }
+
+    const submitSettlesAt = promptCommandSubmitSettleDeadline(text, command);
     const sent = sendChoice(text, command.reason || command.kind, runId, {
       armContinueLoop: command.kind === 'continue',
+      commandKind: command.kind,
     });
     if (!sent) return;
 
@@ -3320,8 +4822,9 @@ function schedulePromptCommand(runId, snapshot, command) {
         kind: 'startup-clear-finalize',
         text,
         label,
-        detail: sendReason,
+        detail: promptCommandSendDetail || label,
         createdAt: Date.now(),
+        submitSettlesAt,
       };
     } else if (command.kind === 'startup-stats') {
       pendingPromptCommand = {
@@ -3331,6 +4834,7 @@ function schedulePromptCommand(runId, snapshot, command) {
         fallbackText: command.fallbackText,
         fallbackUsed: command.fallbackUsed === true,
         createdAt: Date.now(),
+        submitSettlesAt,
       };
     } else if (command.kind === 'startup-model') {
       startupModelCapacityObserved = false;
@@ -3341,6 +4845,7 @@ function schedulePromptCommand(runId, snapshot, command) {
         label,
         createdAt: Date.now(),
         closeSentAt: 0,
+        submitSettlesAt,
       };
     } else if (command.kind === 'stats-session') {
       pendingPromptCommand = {
@@ -3350,7 +4855,10 @@ function schedulePromptCommand(runId, snapshot, command) {
         label: MODEL_MANAGE_COMMAND,
         targetIndex: command.targetIndex,
         targetModel: command.targetModel,
+        advanceReason: command.advanceReason,
+        retryInitialPromptAfterSwitch: command.retryInitialPromptAfterSwitch === true,
         createdAt: Date.now(),
+        submitSettlesAt,
       };
       schedulePendingPromptCommandNudge(runId, PROMPT_COMMAND_SETTLE_MS + 250, 'post-stats-session');
     } else if (command.kind === 'model-manage-open') {
@@ -3358,11 +4866,30 @@ function schedulePromptCommand(runId, snapshot, command) {
         kind: 'model-manage-route',
         targetIndex: command.targetIndex,
         targetModel: command.targetModel,
+        advanceReason: command.advanceReason,
+        retryInitialPromptAfterSwitch: command.retryInitialPromptAfterSwitch === true,
         createdAt: Date.now(),
+        submitSettlesAt,
       };
     } else if (command.kind === 'model-switch' && Number.isInteger(command.targetIndex)) {
-      modelIndex = command.targetIndex;
+      pendingPromptCommand = {
+        kind: 'model-switch-finalize',
+        text,
+        label,
+        targetIndex: command.targetIndex,
+        targetModel: command.targetModel,
+        advanceReason: command.advanceReason,
+        retryInitialPromptAfterSwitch: command.retryInitialPromptAfterSwitch === true,
+        createdAt: Date.now(),
+        submitSettlesAt: 0,
+      };
+    } else if (command.kind === 'auth') {
       pendingPromptCommand = null;
+      authHandoffInProgress = true;
+      sentInitialPrompt = true;
+      continueLoopArmed = false;
+      clearInitialPromptTimer();
+      console.error(`\n[${FLAVOR_LABEL}] Authentication handoff started with ${text}. Waiting for account change completion.\n`);
     }
     scheduleStaticRecheck(QUICK_RECHECK_MS);
   }, delay);
@@ -3373,14 +4900,162 @@ function schedulePromptCommand(runId, snapshot, command) {
   return true;
 }
 
+function promptCommandScheduleDelay(command, snapshot, quietForMs = Date.now() - lastTerminalDataAt) {
+  const kind = String(command?.kind || '').trim();
+  const settleMs = snapshot?.chatPromptActive && isStartupPromptCommandKind(kind)
+    ? STARTUP_VISIBLE_PROMPT_COMMAND_SETTLE_MS
+    : PROMPT_COMMAND_SETTLE_MS;
+  return Math.max(30, settleMs - Math.max(0, quietForMs));
+}
+
+function requiresEmptyPromptInputForCommand(command) {
+  const text = String(command?.text || '').trim();
+  if (String(command?.kind || '').trim() === 'continue') return true;
+  if (!text.startsWith('/')) return false;
+
+  return [
+    'startup-clear',
+    'startup-stats',
+    'startup-model',
+    'stats-session',
+    'model-manage-open',
+    'model-switch',
+    'auth',
+  ].includes(String(command?.kind || '').trim());
+}
+
+function promptCommandSubmitSettleDeadline(text, command) {
+  const reason = command?.reason || command?.kind || '';
+  const commandKind = command?.kind || '';
+  const processingGraceMs = promptSubmitProcessingGraceForKind(commandKind, reason);
+  if (requiresEmptyPromptInputForCommand(command)) {
+    return Date.now() + Math.max(0, PROMPT_SUBMIT_DELAY_MS) + PROMPT_SUBMIT_SETTLE_MS + processingGraceMs;
+  }
+
+  if (!shouldSubmitWithDelayedEnter(text, reason, { commandKind })) return 0;
+  return Date.now() + PROMPT_SUBMIT_DELAY_MS + PROMPT_SUBMIT_SETTLE_MS + processingGraceMs;
+}
+
+function isPromptCommandSubmitSettling(command, now = Date.now()) {
+  if (hasPendingSubmitEnter({ now })) return true;
+  const notBeforeAt = Number(command?.notBeforeAt || 0);
+  if (Number.isFinite(notBeforeAt) && notBeforeAt > now) return true;
+  const deadline = Number(command?.submitSettlesAt || 0);
+  if (Number.isFinite(deadline) && deadline > now) return true;
+
+  const minimumSettleMs = pendingPromptCommandMinimumSubmitSettleMs(command);
+  const createdAt = Number(command?.createdAt || 0);
+  return minimumSettleMs > 0 && Number.isFinite(createdAt) && createdAt > 0 && now - createdAt < minimumSettleMs;
+}
+
+function pendingPromptCommandMinimumSubmitSettleMs(command) {
+  const kind = String(command?.kind || '').trim();
+  if ([
+    'startup-clear-finalize',
+    'startup-stats-finalize',
+    'startup-model-finalize',
+  ].includes(kind)) {
+    return Math.max(0, PROMPT_SUBMIT_DELAY_MS) + PROMPT_SUBMIT_SETTLE_MS + PROMPT_SUBMIT_PROCESSING_GRACE_MS;
+  }
+
+  if ([
+    'model-manage-open',
+    'model-manage-route',
+  ].includes(kind)) {
+    return Math.max(0, PROMPT_SUBMIT_DELAY_MS) + PROMPT_SUBMIT_SETTLE_MS;
+  }
+
+  return 0;
+}
+
+function delayPromptCommandAfterSlashSubmit(command) {
+  if (!command) return null;
+  const delayMs = startupSlashHandoffDelayMs();
+  return {
+    ...command,
+    notBeforeAt: Math.max(Number(command.notBeforeAt || 0), Date.now() + delayMs),
+  };
+}
+
+function startupSlashHandoffDelayMs() {
+  return Math.max(
+    500,
+    PROMPT_COMMAND_SETTLE_MS,
+    Math.max(0, PROMPT_SUBMIT_DELAY_MS) + Math.min(Math.max(0, PROMPT_SUBMIT_SETTLE_MS), 320)
+  );
+}
+
+function promptSubmitProcessingGraceForKind(kind, reason = '') {
+  const commandKind = String(kind || '').trim();
+  const normalizedReason = String(reason || '').trim();
+  if (
+    commandKind === 'startup-clear' ||
+    commandKind === 'startup-stats' ||
+    commandKind === 'startup-model' ||
+    normalizedReason === 'startup clear' ||
+    normalizedReason === 'startup session stats capture' ||
+    normalizedReason === 'startup model capacity capture'
+  ) {
+    return PROMPT_SUBMIT_PROCESSING_GRACE_MS;
+  }
+  return 0;
+}
+
+function describePromptCommandSendDetail(command, snapshot, options = {}) {
+  const kind = String(command?.kind || '').trim();
+  if (kind !== 'startup-clear' && kind !== 'startup-stats' && kind !== 'startup-model' && kind !== 'stats-session' && kind !== 'auth') {
+    return '';
+  }
+
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  const quietForMs = Number.isFinite(options.quietForMs)
+    ? Math.max(0, Number(options.quietForMs))
+    : Math.max(0, now - lastTerminalDataAt);
+  const waitedForMs = Number.isFinite(options.waitedForMs)
+    ? Math.max(0, Number(options.waitedForMs))
+    : Math.max(0, now - Number(command?.createdAt || now));
+
+  if (snapshot?.chatPromptActive) return 'visible prompt field';
+  if (quietForMs >= PROMPT_COMMAND_SETTLE_MS) return `settled normal screen (${quietForMs}ms quiet)`;
+  return `prompt timeout (${waitedForMs}ms)`;
+}
+
+function isPromptCommandStillCurrent(command, pending = pendingPromptCommand) {
+  const kind = String(command?.kind || '').trim();
+  if (!kind) return false;
+  if (kind === 'continue') return true;
+
+  const current = pending && typeof pending === 'object' ? pending : null;
+  if (!current) return false;
+  if (String(current.kind || '').trim() !== kind) return false;
+
+  const commandText = String(command?.text || '').trim();
+  const currentText = String(current.text || '').trim();
+  if ((commandText || currentText) && commandText !== currentText) return false;
+
+  const commandTargetIndex = Number(command?.targetIndex);
+  const currentTargetIndex = Number(current.targetIndex);
+  if ((Number.isInteger(commandTargetIndex) || Number.isInteger(currentTargetIndex)) &&
+      commandTargetIndex !== currentTargetIndex) {
+    return false;
+  }
+
+  const commandTargetModel = String(command?.targetModel || '').trim();
+  const currentTargetModel = String(current.targetModel || '').trim();
+  if ((commandTargetModel || currentTargetModel) && commandTargetModel !== currentTargetModel) return false;
+
+  return true;
+}
+
 function promptCommandPriority(kind) {
   switch (String(kind || '')) {
-    case 'startup-clear':
-    case 'startup-stats':
-    case 'startup-model':
     case 'stats-session':
     case 'model-manage-open':
     case 'model-switch':
+      return 4;
+    case 'startup-clear':
+    case 'startup-stats':
+    case 'startup-model':
       return 3;
     case 'continue':
       return 1;
@@ -3398,6 +5073,10 @@ function canSendPromptCommandWithoutVisiblePrompt(command, snapshot, options = {
 
   const authWaiting = options.authWaiting ?? (authWaitSince > 0);
   if (authWaiting) return false;
+  const promptReadySurface = Object.prototype.hasOwnProperty.call(options, 'promptReadySurface')
+    ? Boolean(options.promptReadySurface)
+    : hasInitialPromptReadySurface(snapshot);
+  if (!promptReadySurface) return false;
 
   const quietForMs = Number.isFinite(options.quietForMs)
     ? Number(options.quietForMs)
@@ -3411,25 +5090,36 @@ function canSendPromptCommandWithoutVisiblePrompt(command, snapshot, options = {
 
 function hasStartupClearSettled(snapshot, options = {}) {
   if (snapshot?.kind !== 'normal') return false;
-  if (snapshot?.chatPromptActive) return true;
-
+  if (hasPendingSubmitEnter(options)) return false;
+  const submitSettlesAt = Number(options.submitSettlesAt || 0);
+  if (Number.isFinite(submitSettlesAt) && submitSettlesAt > Date.now()) return false;
+  const submittedAt = Number(options.submittedAt || 0);
+  if (Number.isFinite(submittedAt) && submittedAt > 0 && lastTerminalDataAt < submittedAt) return false;
+  const waitedForMs = Number.isFinite(options.waitedForMs)
+    ? Number(options.waitedForMs)
+    : 0;
+  const minimumCommandWaitMs = startupSlashHandoffDelayMs();
+  if (waitedForMs < minimumCommandWaitMs) return false;
+  if (promptInputTextFromSnapshot(snapshot)) return false;
   const screenText = String(options.screenText || '').trim();
   const visibleText = String(options.visibleText || '').trim();
+  if (snapshot?.chatPromptActive) return true;
+
   if (extractStartupStatsSnapshot(screenText || visibleText)) return false;
 
   const quietForMs = Number.isFinite(options.quietForMs)
     ? Number(options.quietForMs)
     : Math.max(0, Date.now() - lastTerminalDataAt);
-  const waitedForMs = Number.isFinite(options.waitedForMs)
-    ? Number(options.waitedForMs)
-    : 0;
-
   return quietForMs >= PROMPT_COMMAND_SETTLE_MS || waitedForMs >= INITIAL_PROMPT_MAX_WAIT_MS;
 }
 
 function hasStartupStatsCaptureSettled(snapshot, options = {}) {
   if (!options.startupStatsObserved) return false;
   if (snapshot?.kind !== 'normal') return false;
+  if (hasPendingSubmitEnter(options)) return false;
+  const submitSettlesAt = Number(options.submitSettlesAt || 0);
+  if (Number.isFinite(submitSettlesAt) && submitSettlesAt > Date.now()) return false;
+  if (promptInputTextFromSnapshot(snapshot)) return false;
 
   const screenText = String(options.screenText || '').trim();
   const visibleText = String(options.visibleText || '').trim();
@@ -3449,6 +5139,8 @@ function hasStartupStatsCaptureSettled(snapshot, options = {}) {
 
 function hasStartupModelCapacityClosed(snapshot, options = {}) {
   if (snapshot?.kind !== 'normal') return false;
+  if (hasPendingSubmitEnter(options)) return false;
+  if (promptInputTextFromSnapshot(snapshot)) return false;
 
   const screenText = String(options.screenText || '').trim();
   const visibleText = String(options.visibleText || '').trim();
@@ -3464,6 +5156,18 @@ function hasStartupModelCapacityClosed(snapshot, options = {}) {
     : 0;
 
   return quietForMs >= INITIAL_PROMPT_SETTLE_MS || waitedForMs >= INITIAL_PROMPT_MAX_WAIT_MS;
+}
+
+function hasPendingSubmitEnter(options = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, 'pendingSubmitEnter')) {
+    return Boolean(options.pendingSubmitEnter);
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'pendingSubmitSettling')) {
+    return Boolean(options.pendingSubmitSettling);
+  }
+
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return pendingSubmitTimers.size > 0 || now < pendingSubmitSettleUntil;
 }
 
 function describeStartupStatsCapture(snapshot) {
@@ -3565,6 +5269,22 @@ function actionSeenRecently(key, ttlMs) {
   return typeof ts === 'number' && Date.now() - ts < ttlMs;
 }
 
+function usageLimitActionKey(snapshot) {
+  if (snapshot?.kind !== 'usage_limit') return '';
+  const fingerprint = String(snapshot?.fingerprint || '').trim();
+  return fingerprint ? `usage-limit:${fingerprint}` : '';
+}
+
+function markUsageLimitSnapshotHandled(snapshot) {
+  const key = usageLimitActionKey(snapshot);
+  if (key) rememberAction(key);
+}
+
+function wasUsageLimitSnapshotHandledRecently(snapshot) {
+  const key = usageLimitActionKey(snapshot);
+  return Boolean(key && actionSeenRecently(key, USAGE_LIMIT_ACTION_TTL_MS));
+}
+
 function handleChildExit({ runId, exitCode, signal }) {
   console.error(`\n[child] exited: code=${exitCode} signal=${signal}\n`);
   lastChildExitAt = Date.now();
@@ -3605,6 +5325,13 @@ function handleChildExit({ runId, exitCode, signal }) {
       spawnGemini();
       return;
     }
+  }
+
+  if (authRestartTelemetryPending) {
+    pendingPromptCommand = null;
+    console.error(`\n[${FLAVOR_LABEL}] Gemini exited during account-change restart — relaunching without startup ${STARTUP_CLEAR_COMMAND || '/clear'}.\n`);
+    spawnGemini();
+    return;
   }
 
   if (resumeEnabledThisRun && (exitCode === 42 || sawNoResumeSession)) {
@@ -3751,7 +5478,7 @@ function onUserInput(chunk) {
 
   if (forwardBytes.length > 0 && activePty) {
     try {
-      if (forwardBytes.includes(0x0d) || forwardBytes.includes(0x0a)) {
+      if (manualInputSubmitsPrompt(forwardBytes)) {
         continueLoopArmed = true;
       }
       activePty.write(Buffer.from(forwardBytes).toString('utf8'));
@@ -3805,14 +5532,14 @@ function handleHotkeyCommand(byte) {
       console.error(`\n[local] Automation disabled. ${HOTKEY_PREFIX_LABEL} a to re-enable.\n`);
     } else {
       setAutomationEnabled(true);
-      console.error(`\n[local] Automation enabled.\n`);
+      console.error(`\n[local] Automation enabled; continuous ${CONTINUE_COMMAND} mode armed.\n`);
     }
     return;
   }
 
   if (command === 'o') {
     setAutomationEnabled(true, 'manual');
-    console.error(`\n[local] Automation enabled.\n`);
+    console.error(`\n[local] Automation enabled; continuous ${CONTINUE_COMMAND} mode armed.\n`);
     return;
   }
 
@@ -3866,12 +5593,18 @@ function handleHotkeyCommand(byte) {
 function noteManualInput() {
   clearContinueTimer();
   clearPromptCommandTimer();
+  clearPendingSubmitTimers();
   clearInitialPromptTimer();
+  clearInitialPromptSubmitConfirmTimer();
+  clearAutomationResumeTimer();
   clearMenuPlan();
+  pendingInitialPromptSubmit = null;
   pendingPromptCommand = null;
-  if (!automationEnabled) return;
-  automationPausedUntil = Math.max(automationPausedUntil, Date.now() + MANUAL_OVERRIDE_MS);
-  scheduleAutomationResumeRecheck();
+}
+
+function manualInputSubmitsPrompt(bytes) {
+  if (!Array.isArray(bytes)) return false;
+  return bytes.includes(0x0d) || bytes.includes(0x0a);
 }
 
 function scheduleAutomationResumeRecheck() {
@@ -3929,8 +5662,17 @@ function sendChoice(text, reason, runId, options = {}) {
     }
     if (text === '') {
       activePty.write('\r');
+    } else if (shouldSubmitWithDelayedEnter(text, reason, options)) {
+      const targetPty = activePty;
+      if (shouldDelayWholeSlashSubmit(text, reason, options)) {
+        scheduleDelayedSubmitText(runId, targetPty, text, reason, options);
+      } else {
+        activePty.write(text);
+        scheduleSubmitEnter(runId, targetPty, reason, options);
+      }
     } else {
       activePty.write(text + '\r');
+      trackImmediateSlashCommandSubmit(text, reason, options);
     }
     if (options.armContinueLoop !== false && shouldArmContinueLoopForSubmittedText(text)) {
       continueLoopArmed = true;
@@ -3942,26 +5684,526 @@ function sendChoice(text, reason, runId, options = {}) {
   }
 }
 
-function sendInitialPrompt(runId, detail) {
+function shouldDelayWholeSlashSubmit(text, reason = '', options = {}) {
+  return shouldUseAutocompleteSafeSlashSubmit(text, reason, options);
+}
+
+function shouldUseAutocompleteSafeSlashSubmit(text, reason = '', options = {}) {
+  const trimmed = String(text || '').trim();
+  return trimmed.startsWith('/') && shouldTrackSlashCommandSubmit(reason, options);
+}
+
+function trackImmediateSlashCommandSubmit(text, reason = '', options = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed.startsWith('/')) return;
+  if (!shouldTrackSlashCommandSubmit(reason, options)) return;
+  pendingSubmitSettleUntil = Math.max(
+    pendingSubmitSettleUntil,
+    Date.now() + startupSlashHandoffDelayMs()
+  );
+}
+
+function shouldTrackSlashCommandSubmit(reason = '', options = {}) {
+  const commandKind = String(options.commandKind || '').trim();
+  if ([
+    'startup-clear',
+    'startup-stats',
+    'startup-model',
+    'stats-session',
+    'model-manage-open',
+    'model-switch',
+    'auth',
+  ].includes(commandKind)) return true;
+
+  const normalizedReason = String(reason || '').trim();
+  return normalizedReason === 'startup clear'
+    || normalizedReason === 'startup session stats capture'
+    || normalizedReason === 'startup model capacity capture'
+    || normalizedReason === 'auth'
+    || normalizedReason === 'model-chain-exhausted-auth'
+    || normalizedReason.startsWith('model-switch ');
+}
+
+function shouldSubmitWithDelayedEnter(text, reason = '', options = {}) {
+  const delayMs = Number.isFinite(options.submitDelayMs)
+    ? Number(options.submitDelayMs)
+    : PROMPT_SUBMIT_DELAY_MS;
+  if (delayMs <= 0) return false;
+
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return false;
+  if (/^\d+$/.test(trimmed)) return false;
+
+  const normalizedReason = String(reason || '').trim();
+  const commandKind = String(options.commandKind || '').trim();
+  if (trimmed.startsWith('/')) {
+    return [
+      'startup-clear',
+      'startup-stats',
+      'startup-model',
+      'stats-session',
+      'model-manage-open',
+      'model-switch',
+      'auth',
+    ].includes(commandKind)
+      || normalizedReason === 'startup-clear'
+      || normalizedReason === 'startup-stats'
+      || normalizedReason === 'startup-model'
+      || normalizedReason === 'startup clear'
+      || normalizedReason === 'startup session stats capture'
+      || normalizedReason === 'startup model capacity capture'
+      || normalizedReason === 'auth'
+      || normalizedReason === 'model-chain-exhausted-auth'
+      || normalizedReason.startsWith('model-switch ');
+  }
+
+  const continueCommand = String(CONTINUE_COMMAND || '').trim();
+  return normalizedReason === 'initial-prompt'
+    || normalizedReason === 'continue'
+    || normalizedReason === 'always-continue'
+    || (continueCommand && trimmed === continueCommand);
+}
+
+function scheduleSubmitEnter(runId, targetPty, reason, options = {}) {
+  const delayMs = Math.max(0, Number.isFinite(options.submitDelayMs)
+    ? Number(options.submitDelayMs)
+    : PROMPT_SUBMIT_DELAY_MS);
+  const processingGraceMs = promptSubmitProcessingGraceForKind(options.commandKind, reason);
+  pendingSubmitSettleUntil = Math.max(
+    pendingSubmitSettleUntil,
+    Date.now() + delayMs + PROMPT_SUBMIT_SETTLE_MS + processingGraceMs
+  );
+  const timer = setTimeout(() => {
+    pendingSubmitTimers.delete(timer);
+    if (runId !== activeRunId || !targetPty || !isAutomationActive()) return;
+    try {
+      markPendingPromptCommandSubmitted(options.commandKind);
+      pendingSubmitSettleUntil = Math.max(
+        pendingSubmitSettleUntil,
+        Date.now() + PROMPT_SUBMIT_SETTLE_MS + processingGraceMs
+      );
+      targetPty.write('\r');
+      pendingSubmitSettleUntil = Math.max(
+        pendingSubmitSettleUntil,
+        Date.now() + PROMPT_SUBMIT_SETTLE_MS + processingGraceMs
+      );
+    } catch (error) {
+      console.error(`[warn] Failed to submit automated input (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, delayMs);
+  pendingSubmitTimers.add(timer);
+}
+
+function scheduleDelayedSubmitText(runId, targetPty, text, reason, options = {}) {
+  const delayMs = Math.max(0, Number.isFinite(options.submitDelayMs)
+    ? Number(options.submitDelayMs)
+    : PROMPT_SUBMIT_DELAY_MS);
+  pendingSubmitSettleUntil = Math.max(
+    pendingSubmitSettleUntil,
+    Date.now() + delayMs + startupSlashHandoffDelayMs()
+  );
+  const timer = setTimeout(() => {
+    pendingSubmitTimers.delete(timer);
+    if (runId !== activeRunId || !targetPty || !isAutomationActive()) return;
+    try {
+      pendingSubmitSettleUntil = Math.max(
+        pendingSubmitSettleUntil,
+        Date.now() + startupSlashHandoffDelayMs()
+      );
+      if (shouldUseAutocompleteSafeSlashSubmit(text, reason, options)) {
+        markPendingPromptCommandSubmitted(options.commandKind);
+        targetPty.write(text);
+        scheduleAutocompleteSafeSubmitEnter(runId, targetPty, reason, options);
+      } else {
+        markPendingPromptCommandSubmitted(options.commandKind);
+        targetPty.write(`${text}\r`);
+      }
+      pendingSubmitSettleUntil = Math.max(
+        pendingSubmitSettleUntil,
+        Date.now() + startupSlashHandoffDelayMs()
+      );
+    } catch (error) {
+      console.error(`[warn] Failed to submit automated input (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, delayMs);
+  pendingSubmitTimers.add(timer);
+}
+
+function scheduleAutocompleteSafeSubmitEnter(runId, targetPty, reason, options = {}) {
+  const dismissTimer = setTimeout(() => {
+    pendingSubmitTimers.delete(dismissTimer);
+    if (runId !== activeRunId || !targetPty || !isAutomationActive()) return;
+    try {
+      targetPty.write('\x1B');
+      const enterTimer = setTimeout(() => {
+        pendingSubmitTimers.delete(enterTimer);
+        if (runId !== activeRunId || !targetPty || !isAutomationActive()) return;
+        try {
+          markPendingPromptCommandSubmitted(options.commandKind);
+          targetPty.write('\r');
+        } catch (error) {
+          console.error(`[warn] Failed to submit Enter after autocomplete dismiss (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }, 80);
+      pendingSubmitTimers.add(enterTimer);
+    } catch (error) {
+      console.error(`[warn] Failed to dismiss autocomplete (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 80);
+  pendingSubmitTimers.add(dismissTimer);
+}
+
+function markPendingPromptCommandSubmitted(commandKind) {
+  const submittedAt = Date.now();
+  const kind = String(commandKind || '').trim();
+  if (!kind || !pendingPromptCommand) return submittedAt;
+  const pendingKind = String(pendingPromptCommand.kind || '').trim();
+  const expectedFinalizeKind = `${kind}-finalize`;
+  const matches =
+    pendingKind === expectedFinalizeKind ||
+    (kind === 'stats-session' && pendingKind === 'model-manage-open') ||
+    (kind === 'model-manage-open' && pendingKind === 'model-manage-route') ||
+    (kind === 'model-switch' && pendingKind === 'model-switch-finalize');
+  if (matches) {
+    const existingSubmittedAt = Number(pendingPromptCommand.submittedAt || 0);
+    pendingPromptCommand.submittedAt = existingSubmittedAt > 0
+      ? Math.min(existingSubmittedAt, submittedAt)
+      : submittedAt;
+  }
+  return submittedAt;
+}
+
+function sendInitialPrompt(runId, detail, snapshot = currentSnapshot) {
   clearInitialPromptTimer();
   if (runId !== activeRunId || !activePty || sentInitialPrompt) return false;
+  if (pendingPromptCommand) return false;
+  if (String(snapshot?.promptInputText || '').trim()) return false;
 
-  console.error(`\n[${FLAVOR_LABEL}] Auto-sending initial prompt (${detail})...\n`);
-  const sent = sendChoice(GEMINI_INITIAL_PROMPT, 'initial-prompt', runId);
+  const promptText = (lastUserPrompt && lastUserPrompt !== String(GEMINI_INITIAL_PROMPT || '').trim())
+    ? lastUserPrompt
+    : GEMINI_INITIAL_PROMPT;
+  const promptLabel = promptText === GEMINI_INITIAL_PROMPT ? 'initial prompt' : 'last user prompt';
+  console.error(`\n[${FLAVOR_LABEL}] Auto-sending ${promptLabel} (${detail})...\n`);
+  const sent = sendChoice(promptText, 'initial-prompt', runId);
   if (sent) {
     sentInitialPrompt = true;
     initialPromptPendingSince = 0;
+    initialPromptSubmittedFingerprint = String(snapshot?.promptFingerprint || snapshot?.fingerprint || '').trim();
+    pendingInitialPromptSubmit = {
+      runId,
+      text: promptText,
+      attempts: 0,
+      createdAt: Date.now(),
+      promptFingerprint: initialPromptSubmittedFingerprint,
+    };
+    scheduleInitialPromptSubmitConfirmation(runId);
+    if (!lastUserPrompt) lastUserPrompt = String(GEMINI_INITIAL_PROMPT || '').trim();
   }
   return sent;
 }
 
-function shouldLaunchInitialPromptWithLaunchArgs(capabilities = currentGeminiCliCapabilities) {
+function scheduleInitialPromptSubmitConfirmation(runId, delayMs = null) {
+  clearInitialPromptSubmitConfirmTimer();
+  if (!pendingInitialPromptSubmit || runId !== activeRunId || !activePty || shuttingDown) return;
+
+  const effectiveDelayMs = Number.isFinite(delayMs)
+    ? Math.max(30, Number(delayMs))
+    : Math.max(80, Math.max(0, PROMPT_SUBMIT_DELAY_MS) + INITIAL_PROMPT_SUBMIT_CONFIRM_MS);
+
+  if (DEBUG_AUTOMATION) {
+    console.error(`[${FLAVOR_LABEL}][prompt] confirming initial prompt submit in ${effectiveDelayMs}ms`);
+  }
+  initialPromptSubmitConfirmTimer = setTimeout(() => {
+    initialPromptSubmitConfirmTimer = null;
+    confirmInitialPromptSubmitted(runId);
+  }, effectiveDelayMs);
+}
+
+function confirmInitialPromptSubmitted(runId) {
+  const submission = pendingInitialPromptSubmit;
+  if (!submission || runId !== activeRunId || !activePty || shuttingDown) return;
+  if (!isAutomationActive()) {
+    scheduleInitialPromptSubmitConfirmation(runId, INITIAL_PROMPT_SUBMIT_CONFIRM_MS);
+    return;
+  }
+
+  const snapshot = detectCurrentSnapshot();
+  updateCurrentSnapshot(snapshot);
+  const promptInputText = promptInputTextFromSnapshot(snapshot) || visibleSubmittedPromptInputText(submission.text);
+  const quietForMs = Date.now() - lastTerminalDataAt;
+
+  if (!promptInputText && snapshot?.kind === 'normal' && quietForMs < INITIAL_PROMPT_SETTLE_MS) {
+    if (DEBUG_AUTOMATION) {
+      console.error(`[${FLAVOR_LABEL}][prompt] initial prompt submit confirmation waiting for terminal to settle (${quietForMs}ms quiet)`);
+    }
+    scheduleInitialPromptSubmitConfirmation(runId, INITIAL_PROMPT_SUBMIT_CONFIRM_MS);
+    return;
+  }
+
+  if (isInitialPromptSubmissionConfirmed(snapshot, submission)) {
+    if (DEBUG_AUTOMATION) {
+      console.error(`[${FLAVOR_LABEL}][prompt] initial prompt submit confirmed`);
+    }
+    pendingInitialPromptSubmit = null;
+    return;
+  }
+
+  if (DEBUG_AUTOMATION) {
+    console.error(`[${FLAVOR_LABEL}][prompt] initial prompt submit still pending; visible input=${JSON.stringify(promptInputText)}`);
+  }
+  if (!promptInputMatchesSubmittedPrompt(promptInputText, submission.text)) {
+    pendingInitialPromptSubmit = null;
+    return;
+  }
+
+  const maxAttempts = Math.max(1, INITIAL_PROMPT_SUBMIT_RETRY_MAX);
+  if (submission.attempts < maxAttempts) {
+    submission.attempts += 1;
+    console.error(`\n[${FLAVOR_LABEL}] Initial prompt is still in the input field; retrying Enter (${submission.attempts}/${maxAttempts}).\n`);
+    sendInitialPromptSubmitRetry(runId, submission.attempts);
+    scheduleInitialPromptSubmitConfirmation(runId, INITIAL_PROMPT_SUBMIT_CONFIRM_MS);
+    return;
+  }
+
+  console.error(`\n[${FLAVOR_LABEL}] Initial prompt stayed in the input field after ${maxAttempts} Enter retries; clearing and requeueing it.\n`);
+  sendRaw('\x15', 'initial-prompt-clear-stuck-input');
+  pendingInitialPromptSubmit = null;
+  sentInitialPrompt = false;
+  initialPromptSubmittedFingerprint = '';
+  initialPromptPendingSince = 0;
+  scheduleInitialPromptRetry(runId, 'retrying initial prompt after stuck input');
+}
+
+function isInitialPromptSubmissionConfirmed(snapshot, submission) {
+  if (!submission) return true;
+  const promptInputText = promptInputTextFromSnapshot(snapshot);
+  if (!promptInputText) return true;
+  if (snapshot?.kind !== 'normal') return true;
+  return false;
+}
+
+function promptInputMatchesSubmittedPrompt(inputText, submittedText) {
+  const input = normalizePromptInputForComparison(inputText);
+  const submitted = normalizePromptInputForComparison(submittedText);
+  if (!input || !submitted) return false;
+  if (input === submitted || input.includes(submitted)) return true;
+  return submitted.includes(input) && input.length >= Math.min(16, submitted.length);
+}
+
+function visibleSubmittedPromptInputText(submittedText) {
+  const visibleInput = extractPromptInputText(String(currentScreenTerminalText() || '').split('\n'));
+  if (promptInputMatchesSubmittedPrompt(visibleInput, submittedText)) return visibleInput;
+  return '';
+}
+
+function normalizePromptInputForComparison(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sendInitialPromptSubmitRetry(runId, attempt) {
+  if (runId !== activeRunId || !activePty || !isAutomationActive()) return false;
+  try {
+    if (attempt >= 2) {
+      activePty.write('\x1B');
+    }
+    activePty.write('\r');
+    return true;
+  } catch (error) {
+    console.error(`[warn] Failed to retry initial prompt Enter: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+function sendReplayPromptAfterSwitch(runId, detail) {
+  if (runId !== activeRunId || !activePty) return false;
+  const replayText = String(lastUserPrompt || GEMINI_INITIAL_PROMPT || '').trim();
+  if (!replayText) return false;
+  console.error(`\n[${FLAVOR_LABEL}] Replaying last user prompt after model switch (${detail})...\n`);
+  return sendChoice(replayText, 'replay-after-switch', runId);
+}
+
+function shouldRetryInitialPromptAfterUsageLimit() {
+  return Boolean(GEMINI_INITIAL_PROMPT && sentInitialPrompt);
+}
+
+function rearmInitialPromptAfterUsageLimitSwitch(targetModel = '') {
+  if (!GEMINI_INITIAL_PROMPT) return false;
+
+  sentInitialPrompt = false;
+  initialPromptPendingSince = 0;
+  initialPromptSubmittedFingerprint = '';
+  continueLoopArmed = true;
+
+  const target = String(targetModel || currentModel() || '').trim();
+  const suffix = target ? ` on ${target}` : '';
+  console.error(`\n[${FLAVOR_LABEL}] Usage-limit recovery: retrying initial prompt${suffix}.\n`);
+  scheduleInitialPromptRetry(activeRunId, 'usage-limit model switch');
+  return true;
+}
+
+function shouldAutoContinuePrompt(snapshot, options = {}) {
+  const mode = effectiveAutoContinueMode(options);
+  if (mode !== 'always') return false;
+  if (Boolean(options.authHandoffInProgress ?? authHandoffInProgress)) return false;
+  if (Boolean(options.authRestartTelemetryPending ?? authRestartTelemetryPending)) return false;
+  if (snapshot?.kind !== 'normal' || !snapshot?.chatPromptActive) return false;
+  if (promptInputTextFromSnapshot(snapshot)) return false;
+  if (!Boolean(options.continueLoopArmed ?? continueLoopArmed)) return false;
+
+  const promptFingerprint = String(snapshot?.promptFingerprint || '').trim();
+  if (!promptFingerprint) return false;
+
+  const submittedFingerprint = String(options.initialPromptSubmittedFingerprint ?? initialPromptSubmittedFingerprint ?? '').trim();
+  if (submittedFingerprint && promptFingerprint === submittedFingerprint) return false;
+
+  return true;
+}
+
+function selectedAutoContinueCommand(snapshot, options = {}) {
+  const primary = String(options.continueCommand ?? CONTINUE_COMMAND ?? '').trim() || 'continue';
+  const fallback = String(options.continueFallbackCommand ?? CONTINUE_FALLBACK_COMMAND ?? '').trim();
+  if (shouldUseContinueFallbackPrompt(snapshot, options)) {
+    return {
+      text: fallback,
+      reason: 'auto-continue recovery prompt',
+      label: fallback,
+      usingFallback: true,
+    };
+  }
+  return {
+    text: primary,
+    reason: 'auto-continue prompt',
+    label: primary,
+    usingFallback: false,
+  };
+}
+
+function shouldUseContinueFallbackPrompt(snapshot, options = {}) {
+  const fallback = String(options.continueFallbackCommand ?? CONTINUE_FALLBACK_COMMAND ?? '').trim();
+  const primary = String(options.continueCommand ?? CONTINUE_COMMAND ?? '').trim() || 'continue';
+  if (!fallback || fallback === primary) return false;
+  if (snapshot?.kind !== 'normal' || !snapshot?.chatPromptActive) return false;
+  const text = String(options.visibleText ?? (normalizedTail || currentScreenTerminalText()) ?? '').trim();
+  return hasRepeatedConcludedSessionText(text, options);
+}
+
+function hasRepeatedConcludedSessionText(text, options = {}) {
+  const repeatThreshold = Math.max(2, toNumber(options.concludedSessionRepeatThreshold, 2));
+  return concludedSessionKeywordBlockCount(text) >= repeatThreshold;
+}
+
+function concludedSessionKeywordBlockCount(text) {
+  return concludedSessionCandidateBlocks(text).filter(hasConcludedSessionText).length;
+}
+
+function concludedSessionCandidateBlocks(text) {
+  const normalized = normalizeTerminalText(String(text || ''));
+  if (!normalized) return [];
+  const blocks = [];
+  let current = [];
+
+  const flush = () => {
+    const block = current.join('\n').replace(/\s+/g, ' ').trim();
+    current = [];
+    if (block) blocks.push(block);
+  };
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = String(rawLine || '').trim();
+    if (!line) {
+      if (current.length) current.push('');
+      continue;
+    }
+    if (isGeminiUserPromptLine(line) || isGeminiScreenSeparatorLine(line)) {
+      flush();
+      continue;
+    }
+    if (/^✦\s+/.test(line)) {
+      flush();
+    }
+    current.push(line);
+  }
+  flush();
+
+  return blocks.filter((block) => block.length >= 24);
+}
+
+function isGeminiUserPromptLine(line) {
+  return /^>\s+\S/.test(String(line || '').trim());
+}
+
+function isGeminiScreenSeparatorLine(line) {
+  return /^[▄▀─━═]{8,}$/.test(String(line || '').trim());
+}
+
+function hasConcludedSessionText(text) {
+  const families = concludedSessionKeywordFamilies(text);
+  return families.includes('context') &&
+    families.includes('completion') &&
+    families.includes('idle');
+}
+
+function concludedSessionKeywordFamilies(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').toLowerCase();
+  if (!normalized) return [];
+
+  const families = new Set();
+  if (/\b(?:session|task|tasks|request|requested|instructions?|work|refactor(?:ing)?|lint(?:ing)?|development)\b/.test(normalized)) {
+    families.add('context');
+  }
+  if (/\b(?:conclud(?:e|ed|es|ing)|conclusion|complete(?:d|ly)?|finish(?:ed|ing)?|done|implemented|verified|success(?:ful|fully)?)\b/.test(normalized)) {
+    families.add('completion');
+  }
+  if (/\b(?:idle|standby|standing\s+by|await(?:ing)?|pending|terminat(?:e|ed|ing))\b/.test(normalized) ||
+      /\bno\s+(?:further|additional|more)\b/.test(normalized) ||
+      /\bnothing\s+(?:else|more|further)\b/.test(normalized) ||
+      /\bnew\s+(?:session|task|request)\b/.test(normalized) ||
+      /\bstart\s+(?:a\s+)?new\b/.test(normalized)) {
+    families.add('idle');
+  }
+  return [...families];
+}
+
+function effectiveAutoContinueMode(options = {}) {
+  const mode = String(options.autoContinueMode ?? AUTO_CONTINUE_MODE ?? '').trim();
+  if (Boolean(options.promptAutoContinueAlways ?? promptAutoContinueAlways)) return 'always';
+  return mode;
+}
+
+function shouldLaunchInitialPromptWithLaunchArgs(capabilities = currentGeminiCliCapabilities, options = {}) {
+  if (!GEMINI_INITIAL_PROMPT) return false;
+  if (options.ptyAvailable === false) return true;
   if (shouldRequireStartupStatsBeforeInitialPrompt()) return false;
   return capabilities?.startupStatsAutomationSupported === false;
 }
 
 function shouldRequireStartupStatsBeforeInitialPrompt() {
   return Boolean(GEMINI_INITIAL_PROMPT);
+}
+
+function shouldDelayInitialPromptForStartupStats(options = {}) {
+  const hasInitialPrompt = options.hasInitialPrompt ?? shouldRequireStartupStatsBeforeInitialPrompt();
+  if (!hasInitialPrompt) return false;
+
+  const effectivePendingPromptCommand = Object.prototype.hasOwnProperty.call(options, 'pendingPromptCommand')
+    ? options.pendingPromptCommand
+    : pendingPromptCommand;
+  const blocksInitialPrompt = Boolean(options.startupStatsBlocksInitialPrompt ?? startupStatsBlocksInitialPrompt);
+  if (blocksInitialPrompt) return true;
+
+  const blockedReason = String(options.startupStatsBlockedReason ?? startupStatsBlockedReason ?? '').trim();
+  if (blockedReason) return isStartupPromptCommandKind(effectivePendingPromptCommand?.kind);
+  if (buildNextStartupCommand(options)) return true;
+
+  if (Boolean(options.startupStatsObserved ?? startupStatsObserved)) return false;
+
+  return isStartupPromptCommandKind(effectivePendingPromptCommand?.kind);
+}
+
+function isStartupPromptCommandKind(kind) {
+  return String(kind || '').trim().startsWith('startup-');
 }
 
 function resolveStartupStatsBlockReason(options = {}) {
@@ -3980,11 +6222,90 @@ function resolveStartupStatsBlockReason(options = {}) {
 }
 
 function buildStartupCommandPipeline(capabilities = currentGeminiCliCapabilities) {
-  const startupStatsCommand = buildStartupStatsCommand(capabilities);
-  if (!startupStatsCommand) return null;
+  return delayStartupFirstCommand(buildNextStartupCommand({
+    capabilities,
+    startupClearCompleted: false,
+    startupStatsObserved: false,
+    startupModelCapacityObserved: false,
+    startupStatsBlockedReason: '',
+  }));
+}
 
-  const startupClearCommand = buildStartupClearCommand();
-  return startupClearCommand || startupStatsCommand;
+function delayStartupFirstCommand(command) {
+  if (!command) return null;
+  return {
+    ...command,
+    notBeforeAt: Math.max(Number(command.notBeforeAt || 0), Date.now() + Math.max(0, STARTUP_FIRST_COMMAND_DELAY_MS)),
+  };
+}
+
+function buildPostAuthTelemetryCommand(capabilities = currentGeminiCliCapabilities) {
+  startupClearCompleted = true;
+  startupStatsObserved = false;
+  startupStatsSnapshot = null;
+  startupStatsBlockedReason = '';
+  startupStatsBlocksInitialPrompt = false;
+  startupModelCapacityObserved = false;
+  startupModelCapacitySnapshot = null;
+
+  return buildNextStartupCommand({
+    capabilities,
+    startupClearCompleted: true,
+    startupStatsObserved: false,
+    startupModelCapacityObserved: false,
+    startupStatsBlockedReason: '',
+    startupStatsBlocksInitialPrompt: false,
+  });
+}
+
+function buildNextStartupCommand(options = {}) {
+  const blockedReason = String(options.startupStatsBlockedReason ?? startupStatsBlockedReason ?? '').trim();
+  const blocksInitialPrompt = Boolean(options.startupStatsBlocksInitialPrompt ?? startupStatsBlocksInitialPrompt);
+  if (blockedReason && blocksInitialPrompt) return null;
+  if (isStartupModelUnavailableReason(blockedReason)) return null;
+
+  const statsObserved = Boolean(options.startupStatsObserved ?? startupStatsObserved);
+  const clearCompleted = Boolean(options.startupClearCompleted ?? startupClearCompleted);
+  const modelCapacityObserved = Boolean(options.startupModelCapacityObserved ?? startupModelCapacityObserved);
+  const capabilities = options.capabilities ?? currentGeminiCliCapabilities;
+
+  if (!clearCompleted) {
+    const startupClearCommand = buildStartupClearCommand();
+    if (startupClearCommand) return startupClearCommand;
+  }
+
+  if (!statsObserved && !blockedReason) {
+    const startupStatsCommand = buildStartupStatsCommand(capabilities);
+    if (startupStatsCommand) return startupStatsCommand;
+  }
+
+  if (!modelCapacityObserved) {
+    return buildStartupModelCommand();
+  }
+
+  return null;
+}
+
+function isStartupModelUnavailableReason(reason) {
+  const text = String(reason || '').trim();
+  if (!text) return false;
+  const command = String(STARTUP_MODEL_COMMAND || '').trim();
+  if (command && text.includes(`startup ${command}`)) return true;
+  return /startup\s+\/model\b/i.test(text);
+}
+
+function shouldRequeueStartupCommand(snapshot, options = {}) {
+  const effectivePendingPromptCommand = Object.prototype.hasOwnProperty.call(options, 'pendingPromptCommand')
+    ? options.pendingPromptCommand
+    : pendingPromptCommand;
+  if (effectivePendingPromptCommand) return false;
+  if ((options.sentInitialPrompt ?? sentInitialPrompt)) return false;
+  const blockedReason = String(options.startupStatsBlockedReason ?? startupStatsBlockedReason ?? '').trim();
+  const blocksInitialPrompt = Boolean(options.startupStatsBlocksInitialPrompt ?? startupStatsBlocksInitialPrompt);
+  if (blockedReason && blocksInitialPrompt) return false;
+  if (Boolean(options.authWaiting ?? (authWaitSince > 0))) return false;
+  if (snapshot?.kind !== 'normal') return false;
+  return Boolean(buildNextStartupCommand(options));
 }
 
 function buildStartupClearCommand() {
@@ -4029,6 +6350,20 @@ function buildStartupModelCommand() {
   };
 }
 
+function buildModelChainExhaustedAuthCommand(reason = '') {
+  const text = String(AUTH_COMMAND || '').trim();
+  if (!text) return null;
+
+  return {
+    kind: 'auth',
+    text,
+    reason: 'model-chain-exhausted-auth',
+    label: text,
+    detail: String(reason || '').trim(),
+    createdAt: Date.now(),
+  };
+}
+
 function buildStartupStatsFallbackCommand(command = {}) {
   if (command?.fallbackUsed === true) return null;
 
@@ -4046,7 +6381,7 @@ function buildStartupStatsFallbackCommand(command = {}) {
   };
 }
 
-function buildModelManageStarterCommand(targetIndex, targetModel, capabilities = currentGeminiCliCapabilities) {
+function buildModelManageStarterCommand(targetIndex, targetModel, capabilities = currentGeminiCliCapabilities, options = {}) {
   const index = Number(targetIndex);
   const model = String(targetModel || '').trim();
   if (!Number.isInteger(index) || index < 0 || !model) return null;
@@ -4059,6 +6394,8 @@ function buildModelManageStarterCommand(targetIndex, targetModel, capabilities =
       label: MODEL_MANAGE_COMMAND,
       targetIndex: index,
       targetModel: model,
+      advanceReason: options.advanceReason || '',
+      retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
       createdAt: Date.now(),
     };
   }
@@ -4070,6 +6407,8 @@ function buildModelManageStarterCommand(targetIndex, targetModel, capabilities =
     label: STATS_SESSION_COMMAND,
     targetIndex: index,
     targetModel: model,
+    advanceReason: options.advanceReason || '',
+    retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
     createdAt: Date.now(),
   };
 }
@@ -4082,6 +6421,27 @@ function scheduleInitialPromptRetry(runId, reason = 'initial prompt retry') {
     if (runId !== activeRunId || sentInitialPrompt || !activePty || !isAutomationActive()) return;
     recheckVisiblePrompt(reason);
   }, INITIAL_PROMPT_RETRY_MS);
+}
+
+function dismissCapacityPopup(reason = 'capacity-dismiss') {
+  if (!activePty) return false;
+  return sendRaw('\x1B', reason);
+}
+
+const SPINNER_CANCEL_GAP_MS = 1500;
+const SPINNER_CANCEL_MAX_ATTEMPTS = 3;
+function nudgeSpinnerForPendingModelSwitch() {
+  if (!activePty || !pendingPromptCommand || pendingPromptCommand.kind !== 'model-switch') return 'noop';
+  const now = Date.now();
+  const attempts = Number(pendingPromptCommand.spinnerCancelAttempts || 0);
+  const lastSentAt = Number(pendingPromptCommand.spinnerCancelSentAt || 0);
+  if (lastSentAt && now - lastSentAt < SPINNER_CANCEL_GAP_MS) return 'waiting';
+  if (attempts >= SPINNER_CANCEL_MAX_ATTEMPTS) return 'exhausted';
+  pendingPromptCommand.spinnerCancelAttempts = attempts + 1;
+  pendingPromptCommand.spinnerCancelSentAt = now;
+  console.error(`\n[${FLAVOR_LABEL}] Cancelling Gemini CLI thinking spinner before sending model-switch (attempt ${attempts + 1}/${SPINNER_CANCEL_MAX_ATTEMPTS}).\n`);
+  sendRaw('\x1B', `model-switch-cancel-spinner-${attempts + 1}`);
+  return 'sent';
 }
 
 function sendRaw(text, reason = 'raw') {
@@ -4115,7 +6475,21 @@ function extractStartupModelCapacitySnapshot(text) {
   const lines = normalizedSessionStatsLines(text);
   if (lines.length === 0) return null;
 
-  const startIndex = lines.findIndex((line) => /^select model$/i.test(line) || /^\/model$/i.test(line) || /^model usage$/i.test(line));
+  let startIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (/^select model$/i.test(lines[index]) || /^\/model$/i.test(lines[index])) {
+      startIndex = index;
+      break;
+    }
+  }
+  if (startIndex < 0) {
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (/^model usage$/i.test(lines[index])) {
+        startIndex = index;
+        break;
+      }
+    }
+  }
   if (startIndex < 0) return null;
 
   const candidateLines = [];
@@ -4142,7 +6516,7 @@ function extractStartupModelCapacitySnapshot(text) {
     .filter(Boolean);
 
   if (!sawModelDialog && rows.length === 0) return null;
-  if (!sawModelUsage && rows.length === 0) return null;
+  if (!sawModelUsage && rows.length === 0 && !currentModel) return null;
 
   return {
     startupModelCommand: STARTUP_MODEL_COMMAND,
@@ -4153,18 +6527,156 @@ function extractStartupModelCapacitySnapshot(text) {
   };
 }
 
+function resolveDirectModelSwitchConfirmation(targetModel, options = {}) {
+  const observedModel = extractVisibleCurrentModel(options.screenText)
+    || extractVisibleCurrentModel(options.visibleText);
+  return {
+    confirmed: modelIdentifiersMatch(observedModel, targetModel),
+    observedModel,
+  };
+}
+
+function isDirectModelSwitchConfirmed(targetModel, options = {}) {
+  return resolveDirectModelSwitchConfirmation(targetModel, options).confirmed;
+}
+
+function extractVisibleCurrentModel(text) {
+  const statusRowModel = extractVisibleStatusRowCurrentModel(text);
+  if (statusRowModel) return statusRowModel;
+
+  const modelPanelSnapshot = extractStartupModelCapacitySnapshot(text);
+  return String(modelPanelSnapshot?.currentModel || '').trim();
+}
+
+function extractVisibleStatusRowCurrentModel(text) {
+  const lines = normalizedSessionStatsLines(text);
+  if (lines.length === 0) return '';
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const header = lines[index];
+    const lowerHeader = header.toLowerCase();
+    if (!lowerHeader.includes('/model')) continue;
+    if (!/\b(workspace|branch|sandbox)\b/i.test(header)) continue;
+
+    const candidates = lines.slice(index + 1, index + 5);
+    for (const candidate of candidates) {
+      const model = extractGeminiModelIdentifier(candidate);
+      if (model) return model;
+    }
+  }
+
+  return '';
+}
+
+function modelIdentifiersMatch(left, right) {
+  const normalizedLeft = normalizeModelIdentifier(left);
+  const normalizedRight = normalizeModelIdentifier(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function findModelIndexByIdentifier(model, models = MODELS) {
+  const chain = Array.isArray(models) ? models : [];
+  for (let index = 0; index < chain.length; index += 1) {
+    if (modelIdentifiersMatch(chain[index], model)) return index;
+  }
+  return -1;
+}
+
+function resolveModelIndexFromVisibleCurrentModel(models, currentIndex, text) {
+  const visibleModel = extractVisibleCurrentModel(text);
+  const visibleIndex = findModelIndexByIdentifier(visibleModel, models);
+  if (visibleIndex < 0) {
+    return {
+      modelIndex: Number.isInteger(currentIndex) ? currentIndex : 0,
+      visibleModel,
+      visibleIndex: -1,
+      changed: false,
+    };
+  }
+
+  const normalizedCurrentIndex = Number.isInteger(currentIndex) ? currentIndex : 0;
+  return {
+    modelIndex: visibleIndex,
+    visibleModel,
+    visibleIndex,
+    changed: visibleIndex !== normalizedCurrentIndex,
+  };
+}
+
+function applyVisibleModelReconcileOptions(resolution, currentIndex, options = {}) {
+  const normalizedCurrentIndex = Number.isInteger(currentIndex) ? currentIndex : 0;
+  if (
+    resolution.visibleIndex >= 0
+    && options.allowBackward === false
+    && resolution.visibleIndex < normalizedCurrentIndex
+  ) {
+    return {
+      ...resolution,
+      modelIndex: normalizedCurrentIndex,
+      changed: false,
+      ignored: true,
+      ignoredReason: 'visible model is behind current runner model',
+    };
+  }
+
+  return resolution;
+}
+
+function resolveModelIndexFromVisibleTerminalTexts(models, currentIndex, screenText, visibleText, options = {}) {
+  const screenResolution = resolveModelIndexFromVisibleCurrentModel(models, currentIndex, screenText);
+  if (screenResolution.visibleIndex >= 0) {
+    return applyVisibleModelReconcileOptions(screenResolution, currentIndex, options);
+  }
+  const visibleResolution = resolveModelIndexFromVisibleCurrentModel(models, currentIndex, visibleText);
+  return applyVisibleModelReconcileOptions(visibleResolution, currentIndex, options);
+}
+
+function reconcileModelIndexFromVisibleTerminal(reason, options = {}) {
+  const resolution = resolveModelIndexFromVisibleTerminalTexts(
+    MODELS,
+    modelIndex,
+    currentScreenTerminalText(),
+    currentVisibleTerminalText(),
+    options
+  );
+  if (resolution.ignored) return false;
+  if (!resolution.changed || resolution.visibleIndex < 0) return false;
+
+  const previousModel = currentModel();
+  modelIndex = resolution.visibleIndex;
+  console.error(`\n[${FLAVOR_LABEL}] Visible model is ${resolution.visibleModel}; correcting runner model state from ${previousModel} before ${reason}.\n`);
+  return true;
+}
+
+function normalizeModelIdentifier(value) {
+  const extracted = extractGeminiModelIdentifier(value);
+  const raw = extracted || String(value || '').trim();
+  return raw.toLowerCase();
+}
+
+function extractGeminiModelIdentifier(value) {
+  const match = String(value || '').match(/\bgemini[-\w.]*[a-z0-9]\b/i);
+  return match ? match[0].trim() : '';
+}
+
 function parseSelectedModelLine(line) {
-  const normalized = String(line || '')
+  const raw = String(line || '');
+  const numberedOption = /^\s*(?:[●◉○◌]\s*)?\d+\./u.test(raw);
+  const selectedOption = /[●◉]/u.test(raw) || /^\s*[>▸]/u.test(raw);
+  const normalized = raw
     .replace(/[●◉○◌]/g, ' ')
     .replace(/^\s*(?:[>▸]\s*)?(?:\d+\.\s*)?/, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!normalized) return '';
+  if (/\b\d{1,3}%/.test(normalized)) return '';
 
   const manualMatch = normalized.match(/^manual\s*\(([^)]+)\)/i);
-  if (manualMatch) return manualMatch[1].trim();
+  if (manualMatch) return (!numberedOption || selectedOption) ? manualMatch[1].trim() : '';
   if (/^(auto|manual)$/i.test(normalized)) return '';
-  if (/^gemini[-\w.]+/i.test(normalized)) return normalized.split(/\s+/)[0];
+  if (/^gemini[-\w.]+/i.test(normalized)) {
+    return (!numberedOption || selectedOption) ? normalized.split(/\s+/)[0] : '';
+  }
   return '';
 }
 
@@ -4428,6 +6940,7 @@ function setAutomationEnabled(enabled, reason = 'manual') {
 
   if (!enabled) {
     automationPausedUntil = 0;
+    promptAutoContinueAlways = false;
     pendingPromptCommand = null;
     clearAllTimers();
     clearMenuPlan();
@@ -4436,10 +6949,18 @@ function setAutomationEnabled(enabled, reason = 'manual') {
   }
 
   automationPausedUntil = 0;
+  if (shouldForceAlwaysAutoContinueOnAutomationEnable(reason)) {
+    promptAutoContinueAlways = true;
+    continueLoopArmed = true;
+  }
   recentActionKeys.clear();
   clearAllTimers();
   clearMenuPlan();
   recheckVisiblePrompt('automation enabled');
+}
+
+function shouldForceAlwaysAutoContinueOnAutomationEnable(reason = 'manual') {
+  return String(reason || 'manual').trim() === 'manual';
 }
 
 function pauseAutomationTemporarily(ms, reason, silent = false) {
@@ -4471,7 +6992,8 @@ function recheckVisiblePrompt(reason = 'manual recheck') {
 function scheduleStaticRecheck(delay = STATIC_RECHECK_MS) {
   clearStaticRecheckTimer();
   if (!activePty || shuttingDown || !isAutomationActive()) return;
-  if (currentSnapshot.kind === 'normal' && !pendingPromptCommand) return;
+  const initialPromptStillPending = Boolean(GEMINI_INITIAL_PROMPT && !sentInitialPrompt);
+  if (currentSnapshot.kind === 'normal' && !pendingPromptCommand && !initialPromptStillPending) return;
   if (currentSnapshot.kind === 'usage_limit' && !pendingPromptCommand) return;
 
   staticRecheckTimer = setTimeout(() => {
@@ -4491,7 +7013,7 @@ function printLocalHelp() {
       '',
       `[local] ${hotkeySummary()}`,
       `[local] Press the prefix first, then the command key.`,
-      `[local] Manual typing pauses automation for ${Math.round(MANUAL_OVERRIDE_MS / 1000)}s.`,
+      `[local] Manual typing cancels pending automated keystrokes without disabling automation.`,
       `[local] Current model: ${currentModel()}`,
       '',
     ].join('\n')
@@ -4507,6 +7029,7 @@ function printLocalStatus() {
       '',
       `[local] Model: ${currentModel()}`,
       `[local] Automation: ${automationEnabled ? 'enabled' : `disabled (${automationDisabledReason || 'manual'})`}`,
+      `[local] Auto-continue: ${effectiveAutoContinueMode()}`,
       `[local] Paused: ${pausedForMs > 0 ? `${Math.ceil(pausedForMs / 1000)}s remaining` : 'no'}`,
       `[local] Snapshot: ${currentSnapshot.kind}/${currentSnapshot.source}`,
       `[local] Fingerprint: ${currentSnapshot.fingerprint}`,
@@ -4545,10 +7068,24 @@ function clearPendingPromptCommandNudgeTimer() {
   pendingPromptCommandNudgeTimer = null;
 }
 
+function clearPendingSubmitTimers() {
+  for (const timer of pendingSubmitTimers) {
+    clearTimeout(timer);
+  }
+  pendingSubmitTimers.clear();
+  pendingSubmitSettleUntil = 0;
+}
+
 function clearInitialPromptTimer() {
   if (!initialPromptTimer) return;
   clearTimeout(initialPromptTimer);
   initialPromptTimer = null;
+}
+
+function clearInitialPromptSubmitConfirmTimer() {
+  if (!initialPromptSubmitConfirmTimer) return;
+  clearTimeout(initialPromptSubmitConfirmTimer);
+  initialPromptSubmitConfirmTimer = null;
 }
 
 function clearRestartTimer() {
@@ -4579,7 +7116,10 @@ function clearAllTimers() {
   clearContinueTimer();
   clearPromptCommandTimer();
   clearPendingPromptCommandNudgeTimer();
+  clearPendingSubmitTimers();
   clearInitialPromptTimer();
+  clearInitialPromptSubmitConfirmTimer();
+  pendingInitialPromptSubmit = null;
   clearMenuPlan();
   clearRestartTimer();
   clearForceKillTimer();
@@ -4643,6 +7183,11 @@ function validateConfig() {
     throw new Error(`MODEL_SWITCH_MODE=${JSON.stringify(MODEL_SWITCH_MODE)} is invalid. Use manage or set.`);
   }
 
+  const exhaustedActions = new Set(['auth', 'keep_open', 'finish']);
+  if (!exhaustedActions.has(MODEL_CHAIN_EXHAUSTED_ACTION)) {
+    throw new Error(`MODEL_CHAIN_EXHAUSTED_ACTION=${JSON.stringify(MODEL_CHAIN_EXHAUSTED_ACTION)} is invalid. Use auth, keep_open, or finish.`);
+  }
+
   const numericChecks = {
     KEEP_TRY_MAX,
     TRY_AGAIN_MIN_INTERVAL_MS,
@@ -4661,6 +7206,7 @@ function validateConfig() {
     HOTKEY_TIMEOUT_MS,
     STATIC_RECHECK_MS,
     ACTION_RETRY_MIN_MS,
+    PROMPT_SUBMIT_DELAY_MS,
     PERMISSION_RETRY_MIN_MS,
     SCREEN_MAX_BUFFER_ROWS,
     SCREEN_MAX_COLS,
@@ -4685,30 +7231,89 @@ function currentModel() {
 
 function isModelEligibleForSession(model, options = {}) {
   const avoidPro = Boolean(options.avoidProModels);
-  if (!avoidPro) return true;
-  return !/pro/i.test(String(model || ''));
+  if (avoidPro && /pro/i.test(String(model || ''))) return false;
+
+  if (options.avoidFullCapacityModels && isModelAtFullCapacity(model, options.capacityRows)) {
+    return false;
+  }
+
+  return true;
+}
+
+function findCapacityRowForModel(model, rows = []) {
+  const target = String(model || '').trim();
+  if (!target || !Array.isArray(rows)) return null;
+  return rows.find((row) => modelIdentifiersMatch(row?.model, target)) || null;
+}
+
+function isModelAtFullCapacity(model, rows = []) {
+  const row = findCapacityRowForModel(model, rows);
+  if (!row) return false;
+  return Number(row.usedPercentage) >= 100;
 }
 
 function findNextEligibleModelIndexInChain(models, fromIndex, options = {}) {
   const chain = Array.isArray(models) ? models : [];
   const startIndex = Number.isInteger(fromIndex) ? fromIndex + 1 : 0;
+  const fallbackFromModel = String(options.fallbackFromModel || '').trim();
+  const requireFallbackDowngrade = options.requireFallbackDowngrade === true && fallbackFromModel;
 
   for (let index = Math.max(0, startIndex); index < chain.length; index += 1) {
+    if (requireFallbackDowngrade && !isModelDowngradeFallback(fallbackFromModel, chain[index])) {
+      continue;
+    }
     if (isModelEligibleForSession(chain[index], options)) return index;
   }
 
   return -1;
 }
 
-function findNextEligibleModelIndex(fromIndex) {
+function findNextEligibleModelIndex(fromIndex, options = {}) {
   return findNextEligibleModelIndexInChain(MODELS, fromIndex, {
     avoidProModels: avoidProModelsForSession,
+    ...options,
   });
+}
+
+function isModelDowngradeFallback(fromModel, candidateModel) {
+  const fromRank = modelFallbackRank(fromModel);
+  const candidateRank = modelFallbackRank(candidateModel);
+  if (!fromRank || !candidateRank) return true;
+  if (candidateRank.generation > fromRank.generation) return false;
+  if (candidateRank.generation === fromRank.generation && candidateRank.tier > fromRank.tier) {
+    return false;
+  }
+  return true;
+}
+
+function modelFallbackRank(model) {
+  const normalized = normalizeModelIdentifier(model);
+  if (!normalized) return null;
+
+  let generation = 0;
+  if (/\bgemini-3\b/.test(normalized)) generation = 300;
+  else if (/\bgemini-2\.5\b/.test(normalized)) generation = 250;
+  else if (/\bgemini-2\b/.test(normalized)) generation = 200;
+  else if (/\bgemini-1\.5\b/.test(normalized)) generation = 150;
+  else if (/\bgemini-1\b/.test(normalized)) generation = 100;
+  if (generation <= 0) return null;
+
+  let tier = 0;
+  if (/\bpro\b/.test(normalized)) tier = 30;
+  else if (/\bflash-lite\b/.test(normalized) || /\blite\b/.test(normalized)) tier = 10;
+  else if (/\bflash\b/.test(normalized)) tier = 20;
+
+  return { generation, tier };
 }
 
 function canAutoAdvanceModelChain() {
   if (!automationEnabled || NEVER_SWITCH) return false;
   return AUTO_CONTINUE_MODE === 'capacity' || AUTO_CONTINUE_MODE === 'always';
+}
+
+function canAutoAdvanceUsageLimitModelChain() {
+  if (!automationEnabled) return false;
+  return AUTO_CONTINUE_MODE !== 'off';
 }
 
 function isTransitioningPlannedAction(kind) {
@@ -4727,24 +7332,98 @@ function hasAnotherModelInChain() {
   return findNextEligibleModelIndex(modelIndex) >= 0;
 }
 
-function requestModelAdvanceOrFinish(reason) {
-  if (isTransitioningPlannedAction(plannedAction?.kind)) return;
+function usageLimitModelFromSnapshot(snapshot) {
+  if (snapshot?.kind !== 'usage_limit') return '';
+  return String(snapshot?.usageLimitModel || '').trim();
+}
 
-  const nextIndex = findNextEligibleModelIndex(modelIndex);
+function reconcileModelIndexFromUsageLimitModel(usageLimitModel, reason) {
+  const usageIndex = findModelIndexByIdentifier(usageLimitModel, MODELS);
+  if (usageIndex < 0 || usageIndex === modelIndex) return false;
+
+  const previousModel = currentModel();
+  modelIndex = usageIndex;
+  console.error(`\n[${FLAVOR_LABEL}] Usage limit is for ${usageLimitModel}; correcting runner model state from ${previousModel} before ${reason}.\n`);
+  return true;
+}
+
+function requestModelAdvanceOrFinish(reason, options = {}) {
+  if (isTransitioningPlannedAction(plannedAction?.kind)) return 'transitioning';
+
+  reconcileModelIndexFromVisibleTerminal('model fallback selection', {
+    allowBackward: options.allowBackwardVisibleReconcile !== false,
+  });
+  const usageLimitModel = usageLimitModelFromSnapshot(options.snapshot);
+  if (usageLimitModel) {
+    reconcileModelIndexFromUsageLimitModel(usageLimitModel, 'model fallback selection');
+  }
+  const isUsageLimitFallback =
+    options.snapshot?.kind === 'usage_limit' ||
+    /^Usage limit reached\b/i.test(String(reason || '').trim());
+  const fallbackFromModel = usageLimitModel || String(options.fallbackFromModel || '').trim() || currentModel();
+  const nextIndex = findNextEligibleModelIndex(modelIndex, {
+    avoidFullCapacityModels: options.avoidFullCapacityModels === true,
+    capacityRows: options.capacityRows,
+    requireFallbackDowngrade: isUsageLimitFallback || options.requireFallbackDowngrade === true,
+    fallbackFromModel,
+  });
   if (nextIndex >= 0) {
-    if (activePty && queueModelSwitchCommand(nextIndex, reason)) {
+    const forceRelaunch = Boolean(options.forceRelaunch);
+    if (activePty && !forceRelaunch && queueModelSwitchCommand(nextIndex, reason, {
+      retryInitialPromptAfterSwitch: options.retryInitialPromptAfterSwitch === true,
+    })) {
       scheduleStaticRecheck(QUICK_RECHECK_MS);
-      return;
+      return 'queued-switch';
     }
 
     modelIndex = nextIndex;
-    console.error(`\n[${FLAVOR_LABEL}] ${reason} — restarting on ${currentModel()}...\n`);
+    const detail = String(options.forceRelaunchDetail || '').trim();
+    const restartReason = detail ? `${reason} (${detail})` : reason;
+    console.error(`\n[${FLAVOR_LABEL}] ${restartReason} — restarting on ${currentModel()}...\n`);
     requestLauncherAction('restart');
-    return;
+    return 'restart';
   }
 
-  console.error(`\n[${FLAVOR_LABEL}] ${reason} — no fallback models remain. Finishing session.\n`);
-  requestLauncherAction('finish', SESSION_COMPLETE_HOLD_OPEN_EXIT_CODE);
+  return handleModelChainExhausted(reason, options);
+}
+
+function handleModelChainExhausted(reason, options = {}) {
+  const cleanedReason = String(reason || '').trim() || 'Model chain exhausted';
+
+  if (MODEL_CHAIN_EXHAUSTED_ACTION === 'finish') {
+    console.error(`\n[${FLAVOR_LABEL}] ${cleanedReason} — no fallback models remain. Finishing session.\n`);
+    requestLauncherAction('finish', SESSION_COMPLETE_HOLD_OPEN_EXIT_CODE);
+    return 'finish';
+  }
+
+  if (MODEL_CHAIN_EXHAUSTED_ACTION === 'auth') {
+    if (pendingPromptCommand?.kind === 'auth') {
+      scheduleStaticRecheck(QUICK_RECHECK_MS);
+      return 'auth';
+    }
+
+    const authCommand = buildModelChainExhaustedAuthCommand(cleanedReason);
+    if (activePty && authCommand) {
+      pendingPromptCommand = authCommand;
+      clearPromptCommandTimer();
+      clearPendingPromptCommandNudgeTimer();
+      console.error(`\n[${FLAVOR_LABEL}] ${cleanedReason} — no fallback models remain. Queueing ${authCommand.text} so you can sign in with another account.\n`);
+
+      const snapshot = options.snapshot || currentSnapshot;
+      if (!schedulePromptCommand(activeRunId, snapshot, authCommand)) {
+        scheduleStaticRecheck(QUICK_RECHECK_MS);
+      }
+      return 'auth';
+    }
+
+    console.error(`\n[${FLAVOR_LABEL}] ${cleanedReason} — no fallback models remain. Gemini is still open; run ${AUTH_COMMAND || '/auth'} to sign in with another account.\n`);
+    setAutomationEnabled(false, 'model_chain_exhausted');
+    return 'keep-open';
+  }
+
+  console.error(`\n[${FLAVOR_LABEL}] ${cleanedReason} — no fallback models remain. Gemini is still open for manual recovery.\n`);
+  setAutomationEnabled(false, 'model_chain_exhausted');
+  return 'keep-open';
 }
 
 function finishSessionAfterModelChainExhaustion() {
@@ -4802,6 +7481,27 @@ function splitListEnv(value, defaults) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeModelChainExhaustedAction(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  switch (normalized) {
+    case 'auth':
+    case 'offer_auth':
+    case 'reauth':
+    case 'switch_account':
+      return 'auth';
+    case 'keep_open':
+    case 'pause':
+    case 'manual':
+      return 'keep_open';
+    case 'finish':
+    case 'close':
+    case 'exit':
+      return 'finish';
+    default:
+      return normalized || 'auth';
+  }
 }
 
 function shQuote(value) {
@@ -5015,19 +7715,53 @@ export const _test = {
   detectSnapshotFromText,
   detectContinuePrompt,
   buildPromptContext,
+  extractPromptInputText,
+  automationPromptInputCommandLines,
   hasLiveAuthWait,
+  hasAuthRestartRequiredPrompt,
   buildChildEnv,
   buildGeminiArgs,
+  shouldAutoContinuePrompt,
+  selectedAutoContinueCommand,
+  shouldUseContinueFallbackPrompt,
+  hasRepeatedConcludedSessionText,
+  concludedSessionKeywordBlockCount,
+  concludedSessionKeywordFamilies,
+  hasConcludedSessionText,
+  effectiveAutoContinueMode,
+  manualInputSubmitsPrompt,
+  shouldForceAlwaysAutoContinueOnAutomationEnable,
   shouldLaunchInitialPromptWithLaunchArgs,
   shouldRequireStartupStatsBeforeInitialPrompt,
+  shouldDelayInitialPromptForStartupStats,
+  isStartupPromptCommandKind,
   resolveStartupStatsBlockReason,
+  startupPipelineLabel,
+  startupPromptGateLabel,
+  startupPromptDeliveryQueueLabel,
+  startupSequenceQueuedLabel,
   buildStartupCommandPipeline,
+  buildPostAuthTelemetryCommand,
+  buildNextStartupCommand,
+  isStartupModelUnavailableReason,
+  shouldRequeueStartupCommand,
+  isLikelyAutomationPromptInput,
   buildStartupClearCommand,
   buildStartupStatsCommand,
   buildStartupModelCommand,
+  buildModelChainExhaustedAuthCommand,
   buildStartupStatsFallbackCommand,
   buildModelManageStarterCommand,
   buildModelSwitchCommand,
+  buildDirectModelSwitchCommand,
+  shouldSubmitWithDelayedEnter,
+  shouldUseAutocompleteSafeSlashSubmit,
+  promptCommandScheduleDelay,
+  promptInputMatchesSubmittedPrompt,
+  isInitialPromptSubmissionConfirmed,
+  describePromptCommandSendDetail,
+  isPromptCommandStillCurrent,
+  promptCommandPriority,
   extractStartupStatsSnapshot,
   canSendPromptCommandWithoutVisiblePrompt,
   hasStartupClearSettled,
@@ -5036,6 +7770,17 @@ export const _test = {
   describeStartupStatsCapture,
   describeStartupModelCapacityCapture,
   extractStartupModelCapacitySnapshot,
+  extractVisibleCurrentModel,
+  isDirectModelSwitchConfirmed,
+  resolveDirectModelSwitchConfirmation,
+  findModelIndexByIdentifier,
+  resolveModelIndexFromVisibleCurrentModel,
+  resolveModelIndexFromVisibleTerminalTexts,
+  shouldRelaunchForBlockedUsageLimit,
+  shouldSwitchImmediatelyForPromptUsageLimit,
+  resolvePendingModelSwitchTargetForUsageLimit,
+  resolveStartupAutoModelOption,
+  normalizeModelChainExhaustedAction,
   resolveStartupStatsAutomationDisabledReason,
   resolveStatsSessionFallbackCommand,
   ensureGeminiCliCompatibilitySystemSettings,

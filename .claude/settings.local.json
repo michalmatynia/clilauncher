@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift test *)",
+      "Bash(node --check Sources/GeminiLauncherNative/Resources/gemini-automation-runner.mjs)"
+    ]
+  }
+}

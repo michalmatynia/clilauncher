@@ -79,8 +79,15 @@ struct CommandBuilder {
                 env["AUTO_CONTINUE_MODE"] = effectiveProfile.geminiAutoContinueMode.rawValue
             }
             env["AUTO_ALLOW_SESSION_PERMISSIONS"] = effectiveProfile.geminiAutoAllowSessionPermissions ? "1" : "0"
+            env["MODEL_CHAIN_EXHAUSTED_ACTION"] = effectiveProfile.geminiModelChainExhaustedAction.rawValue
             env["AUTOMATION_ENABLED"] = effectiveProfile.geminiAutomationEnabled ? "1" : "0"
             env["NEVER_SWITCH"] = effectiveProfile.geminiNeverSwitch ? "1" : "0"
+            env["GEMINI_MODEL_AUTO"] = effectiveProfile.geminiModelMode == .auto ? "1" : "0"
+            if effectiveProfile.geminiModelMode == .auto {
+                env["GEMINI_AUTO_MODEL"] = "auto"
+            } else {
+                env.removeValue(forKey: "GEMINI_AUTO_MODEL")
+            }
             env["GEMINI_YOLO"] = effectiveProfile.effectiveGeminiYolo ? "1" : "0"
             env["PTY_SET_HOME_TO_ISO"] = effectiveProfile.geminiSetHomeToIso ? "1" : "0"
             env["QUIET_CHILD_NODE_WARNINGS"] = effectiveProfile.geminiQuietChildNodeWarnings ? "1" : "0"
@@ -88,16 +95,12 @@ struct CommandBuilder {
             env["MANUAL_OVERRIDE_MS"] = String(effectiveProfile.geminiManualOverrideMs)
             env["CAPACITY_RETRY_MS"] = String(effectiveProfile.geminiCapacityRetryMs)
             env["HOTKEY_PREFIX"] = effectiveProfile.geminiHotkeyPrefix
-            let initialModel = effectiveProfile.geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            var models = effectiveProfile.geminiModelChain.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            if !initialModel.isEmpty {
-                if let index = models.firstIndex(of: initialModel) {
-                    models.remove(at: index)
-                }
-                models.insert(initialModel, at: 0)
-            }
-            env["MODEL_CHAIN"] = models.joined(separator: ",")
+            env["MODEL_CHAIN"] = effectiveGeminiModelChain(profile: effectiveProfile).joined(separator: ",")
             env["GEMINI_INITIAL_PROMPT"] = effectiveProfile.geminiInitialPrompt
+            env["CONTINUE_COMMAND"] = effectiveProfile.effectiveGeminiSupportingPrompt
+            env["CONTINUE_FALLBACK_COMMAND"] = effectiveProfile.effectiveGeminiRecoveryPrompt
+            env["MODEL_SWITCH_MODE"] = "set"
+            env["MODEL_SWITCH_COMMAND_TEMPLATE"] = "/model {model}"
             if env["RUNNER_LOG_FILE"] == nil || env["RUNNER_LOG_FILE"]?.isEmpty == true {
                 env["RUNNER_LOG_FILE"] = "/tmp/clilauncher.log"
             }
@@ -198,7 +201,9 @@ struct CommandBuilder {
         let initialModel = profile.geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let initialPrompt = profile.geminiInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldResumeLatest = profile.geminiResumeLatest && initialPrompt.isEmpty
-        if !initialModel.isEmpty {
+        if profile.geminiModelMode == .auto {
+            args += ["--model", "auto"]
+        } else if !initialModel.isEmpty {
             args += ["--model", initialModel]
         }
         if shouldResumeLatest {
@@ -217,6 +222,24 @@ struct CommandBuilder {
         }
         args.append(contentsOf: splitCLIArguments(profile.trimmedExtraCLIArgs))
         return (wrapper, args)
+    }
+
+    private func effectiveGeminiModelChain(profile: LaunchProfile) -> [String] {
+        let initialModel = profile.geminiInitialModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredModels = profile.geminiModelChain
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !initialModel.isEmpty else {
+            return configuredModels
+        }
+
+        guard let initialIndex = configuredModels.firstIndex(of: initialModel) else {
+            return [initialModel] + configuredModels.filter { $0 != initialModel }
+        }
+
+        return Array(configuredModels[initialIndex...])
     }
 
     private func buildCopilotExecutableAndArgs(profile: LaunchProfile) throws -> (String, [String]) {

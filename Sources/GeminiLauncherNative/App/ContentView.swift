@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var settingsEditorDraft: AppSettings?
     @State private var pendingSettingsProfileMutations: [PendingSettingsProfileMutation] = []
     @State private var fireAndForgetPrompt = ""
+    @State private var fireAndForgetSupportingPrompt = ""
+    @State private var fireAndForgetRecoveryPrompt = ""
     @State private var isFireAndForgetEnabled = false
     @State private var launchCenterPrimaryActionMode: LaunchCenterPrimaryActionMode = .launch
 
@@ -48,6 +50,7 @@ struct ContentView: View {
         case add(AgentKind)
         case duplicate(UUID)
         case launch(UUID)
+        case launchFavorite(UUID)
         case openProfile(UUID)
         case openWorkbench(UUID)
         case launchWorkbench(UUID)
@@ -92,7 +95,7 @@ struct ContentView: View {
                 .tag(LauncherTab.monitoring)
 
             keystrokesTab
-                .tabItem { Label("Keystrokes", systemImage: "keyboard") }
+                .tabItem { Label("Docs", systemImage: "book") }
                 .tag(LauncherTab.keystrokes)
 
             logsTab
@@ -212,7 +215,7 @@ struct ContentView: View {
             set: { newValue in
                 if let selected = store.selectedProfile,
                    newValue.id == selected.id,
-                   newValue == selected {
+                   Self.profilesMatchForEditorDirtyState(newValue, selected, settings: store.settings, allProfiles: store.profiles) {
                     profileEditorDraft = nil
                 } else {
                     profileEditorDraft = newValue
@@ -317,6 +320,33 @@ struct ContentView: View {
         return store.workbenches.first { $0.id == workbenchSelection }
     }
 
+    private var launchCenterPromptBinding: Binding<String> {
+        Binding(
+            get: { fireAndForgetPrompt },
+            set: { newValue in
+                fireAndForgetPrompt = newValue
+            }
+        )
+    }
+
+    private var launchCenterSupportingPromptBinding: Binding<String> {
+        Binding(
+            get: { fireAndForgetSupportingPrompt },
+            set: { newValue in
+                fireAndForgetSupportingPrompt = newValue
+            }
+        )
+    }
+
+    private var launchCenterRecoveryPromptBinding: Binding<String> {
+        Binding(
+            get: { fireAndForgetRecoveryPrompt },
+            set: { newValue in
+                fireAndForgetRecoveryPrompt = newValue
+            }
+        )
+    }
+
     private var shouldRefreshLiveState: Bool {
         selectedTab == .launch || selectedTab == .workbenches
     }
@@ -332,7 +362,10 @@ struct ContentView: View {
     private var selectedProfilePlanRefreshSignature: String {
         guard let profile = store.selectedProfile else { return "none" }
 
-        return launchSignatureIncludingCompanions(for: profile)
+        return [
+            launchSignatureIncludingCompanions(for: profile),
+            String(isFireAndForgetEnabled)
+        ].joined(separator: "\u{1E}")
     }
 
     private func launchSignatureIncludingCompanions(for profile: LaunchProfile) -> String {
@@ -448,7 +481,9 @@ struct ContentView: View {
             bookmarks: store.bookmarks,
             cautionMessages: store.selectedProfile.map { LaunchTemplateCatalog.cautions(for: $0) } ?? [],
             isVSCodeAvailable: preview.isVSCodeAvailable,
-            favoriteProfiles: store.profiles.filter(\.isFavorite),
+            favoriteProfiles: Self.quickLaunchFavoriteProfiles(from: store.profiles).map {
+                Self.resolvedQuickLaunchFavoriteProfile(favoriteProfile: $0, selectedProfile: store.selectedProfile)
+            },
             primaryActionMode: $launchCenterPrimaryActionMode,
             launchSelectedProfile: launchSelectedProfile,
             launchProfileUpdate: {
@@ -479,13 +514,8 @@ struct ContentView: View {
                 openWorkspaceNow(profile, app: .visualStudioCode)
             },
             exportSelectedProfileLauncher: exportSelectedProfileLauncher,
-            launchQuick: launchQuick,
-            updateQuick: updateQuick,
-            canUpdateQuickLaunch: { template in
-                preferredQuickLaunchProfile(for: template).resolvedUpdateCommand != nil
-            },
             launchFavorite: { profile in
-                requestProfileEditorAction(.launch(profile.id))
+                requestProfileEditorAction(.launchFavorite(profile.id))
             },
             updateFavorite: { profile in
                 launchProfileUpdate(for: profile)
@@ -510,12 +540,15 @@ struct ContentView: View {
                 guard let plan = preview.planPreview else { return }
                 exportLauncher(plan: plan, suggestedName: (store.selectedProfile?.name ?? "Launch") + ".command")
             },
+            saveLauncherState: saveLauncherState,
             toggleAutomation: toggleSelectedProfileAutomation,
             selectedGeminiModelMode: store.selectedProfile?.agentKind == .gemini ? store.selectedProfile?.geminiModelMode : nil,
             setSelectedGeminiModelMode: { mode in
                 store.updateSelected { $0.geminiModelMode = mode }
             },
-            fireAndForgetPrompt: $fireAndForgetPrompt,
+            fireAndForgetPrompt: launchCenterPromptBinding,
+            fireAndForgetSupportingPrompt: launchCenterSupportingPromptBinding,
+            fireAndForgetRecoveryPrompt: launchCenterRecoveryPromptBinding,
             isFireAndForgetEnabled: $isFireAndForgetEnabled
         )
     }
@@ -618,6 +651,7 @@ struct ContentView: View {
                 exportLauncherForProfile(profile.wrappedValue)
             }
         )
+        .id(profile.wrappedValue.id)
     }
 
     private var workbenchesTab: some View {
@@ -833,7 +867,7 @@ struct ContentView: View {
 
     private var isSelectedProfileDraftDirty: Bool {
         guard let draft = profileEditorDraft, let selected = store.selectedProfile, draft.id == selected.id else { return false }
-        return draft != selected
+        return !Self.profilesMatchForEditorDirtyState(draft, selected, settings: store.settings, allProfiles: store.profiles)
     }
 
     private func requestProfileEditorAction(_ action: PendingProfileEditorAction) {
@@ -864,24 +898,51 @@ struct ContentView: View {
         case let .add(kind):
             store.addProfile(kind: kind)
         case let .duplicate(profileID):
-            guard let profile = store.profiles.first(where: { $0.id == profileID }) else { return }
-            duplicateProfile(profile)
+            duplicateProfile(withID: profileID)
         case let .launch(profileID):
             store.selectedProfileID = profileID
             launchSelectedProfile()
+        case let .launchFavorite(profileID):
+            launchFavoriteProfile(withID: profileID)
         case let .openProfile(profileID):
             store.selectedProfileID = profileID
             selectedTab = .profiles
         case let .openWorkbench(workbenchID):
-            guard store.workbenches.contains(where: { $0.id == workbenchID }) else { return }
-            workbenchSelection = workbenchID
-            selectedTab = .workbenches
+            openWorkbench(withID: workbenchID)
         case let .launchWorkbench(workbenchID):
-            guard let workbench = store.workbenches.first(where: { $0.id == workbenchID }) else { return }
-            launch(workbench: workbench)
+            launchWorkbench(withID: workbenchID)
         case let .select(profileID):
             store.selectedProfileID = profileID
         }
+    }
+
+    private func duplicateProfile(withID profileID: UUID) {
+        guard let profile = store.profiles.first(where: { $0.id == profileID }) else { return }
+        duplicateProfile(profile)
+    }
+
+    private func openWorkbench(withID workbenchID: UUID) {
+        guard store.workbenches.contains(where: { $0.id == workbenchID }) else { return }
+        workbenchSelection = workbenchID
+        selectedTab = .workbenches
+    }
+
+    private func launchWorkbench(withID workbenchID: UUID) {
+        guard let workbench = store.workbenches.first(where: { $0.id == workbenchID }) else { return }
+        launch(workbench: workbench)
+    }
+
+    private func launchFavoriteProfile(withID profileID: UUID) {
+        guard let favoriteProfile = store.profiles.first(where: { $0.id == profileID }) else { return }
+        let baseProfile = Self.resolvedQuickLaunchFavoriteProfile(
+            favoriteProfile: favoriteProfile,
+            selectedProfile: store.selectedProfile
+        )
+        guard let launchProfile = maybeConfiguredProfile(
+            for: baseProfile,
+            fallbackAction: "Quick launch \(favoriteProfile.name)"
+        ) else { return }
+        launch(profile: launchProfile, recordHistory: true)
     }
 
     private func synchronizeSelectedProfileDraft(force: Bool = false) {
@@ -895,14 +956,41 @@ struct ContentView: View {
     }
 
     private func synchronizeLaunchPromptState(force: Bool = false) {
-        guard force || fireAndForgetPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        fireAndForgetPrompt = Self.launchPromptDisplayText(for: store.selectedProfile)
+        if force || fireAndForgetPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fireAndForgetPrompt = Self.launchCenterPromptDisplayText(
+                settings: store.settings,
+                profile: store.selectedProfile
+            )
+        }
+        if force || fireAndForgetSupportingPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fireAndForgetSupportingPrompt = Self.launchCenterSupportingPromptDisplayText(
+                settings: store.settings,
+                profile: store.selectedProfile
+            )
+        }
+        if force || fireAndForgetRecoveryPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fireAndForgetRecoveryPrompt = Self.launchCenterRecoveryPromptDisplayText(
+                settings: store.settings,
+                profile: store.selectedProfile
+            )
+        }
     }
 
     private func synchronizeSettingsDraft(force: Bool = false) {
         guard force || !isSettingsDraftDirty else { return }
         settingsEditorDraft = nil
         pendingSettingsProfileMutations = []
+    }
+
+    private func saveLauncherState() {
+        var settings = store.settings
+        settings.launchCenterFireAndForgetPrompt = fireAndForgetPrompt
+        settings.launchCenterFireAndForgetSupportingPrompt = fireAndForgetSupportingPrompt
+        settings.launchCenterFireAndForgetRecoveryPrompt = fireAndForgetRecoveryPrompt
+        store.settings = settings
+        store.save()
+        scheduleLiveStateRefresh(immediate: true)
+        logger.log(.success, "Saved Launcher state.", category: .state, details: store.persistenceLocationDescription)
     }
 
     private func updateSettingsEditorDraft(_ mutation: (inout AppSettings) -> Void) {
@@ -1177,26 +1265,6 @@ struct ContentView: View {
         }
     }
 
-    private func preferredQuickLaunchProfile(for template: LaunchTemplate) -> LaunchProfile {
-        let templateProfile = template.buildProfile(using: store.settings)
-        return Self.resolvedQuickLaunchProfile(
-            templateProfile: templateProfile,
-            selectedProfile: store.selectedProfile,
-            allProfiles: store.profiles
-        )
-    }
-
-    private func launchQuick(_ template: LaunchTemplate) {
-        let baseProfile = preferredQuickLaunchProfile(for: template)
-        guard let launchProfile = maybeConfiguredProfile(for: baseProfile, fallbackAction: "Quick launch \(template.title)") else { return }
-        launch(profile: launchProfile, recordHistory: false)
-    }
-
-    private func updateQuick(_ template: LaunchTemplate) {
-        let profile = preferredQuickLaunchProfile(for: template)
-        launchProfileUpdate(for: profile)
-    }
-
     private func launchSelectedProfile() {
         let baseProfile = selectedTab == .profiles ? selectedProfileEditorProfile : store.selectedProfile
         guard let profile = baseProfile else { return }
@@ -1247,7 +1315,17 @@ struct ContentView: View {
             launchCenterPrompt: fireAndForgetPrompt,
             profilePrompt: profile.geminiInitialPrompt
         )
+        let supportingPrompt = Self.resolvedGeminiSupportingPrompt(
+            launchCenterPrompt: fireAndForgetSupportingPrompt,
+            profilePrompt: profile.geminiSupportingPrompt
+        )
+        let recoveryPrompt = Self.resolvedGeminiRecoveryPrompt(
+            launchCenterPrompt: fireAndForgetRecoveryPrompt,
+            profilePrompt: profile.geminiRecoveryPrompt
+        )
         var launchProfile = profile
+        launchProfile.configureGeminiSupportingPrompt(supportingPrompt)
+        launchProfile.configureGeminiRecoveryPrompt(recoveryPrompt)
 
         if !trimmedPrompt.isEmpty {
             launchProfile.configureGeminiPromptInjection(prompt: trimmedPrompt)
@@ -1269,13 +1347,17 @@ struct ContentView: View {
                 return nil
             }
 
-            launchProfile.configureGeminiFireAndForget(prompt: trimmedPrompt)
+            launchProfile.configureGeminiFireAndForget(
+                prompt: trimmedPrompt,
+                supportingPrompt: supportingPrompt,
+                recoveryPrompt: recoveryPrompt
+            )
             if logChanges {
                 logger.log(
                     .info,
                     "Fire-and-forget launch requested for \(profile.name).",
                     category: .launch,
-                    details: "continuous=true • chars=\(trimmedPrompt.count)"
+                    details: "continuous=true • chars=\(trimmedPrompt.count) • supportingChars=\(supportingPrompt.count) • recoveryChars=\(recoveryPrompt.count)"
                 )
             }
         }
@@ -1316,9 +1398,150 @@ struct ContentView: View {
         return profilePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func resolvedGeminiSupportingPrompt(launchCenterPrompt: String, profilePrompt: String) -> String {
+        let trimmedLaunchCenterPrompt = launchCenterPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLaunchCenterPrompt.isEmpty {
+            return trimmedLaunchCenterPrompt
+        }
+        return LaunchProfile.resolvedGeminiSupportingPrompt(profilePrompt)
+    }
+
+    static func resolvedGeminiRecoveryPrompt(launchCenterPrompt: String, profilePrompt: String) -> String {
+        let trimmedLaunchCenterPrompt = launchCenterPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLaunchCenterPrompt.isEmpty {
+            return trimmedLaunchCenterPrompt
+        }
+        return LaunchProfile.resolvedGeminiRecoveryPrompt(profilePrompt)
+    }
+
     static func launchPromptDisplayText(for profile: LaunchProfile?) -> String {
         guard let profile, profile.agentKind == .gemini else { return "" }
         return profile.geminiInitialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func supportingPromptDisplayText(for profile: LaunchProfile?) -> String {
+        guard let profile, profile.agentKind == .gemini else { return "" }
+        return profile.effectiveGeminiSupportingPrompt
+    }
+
+    static func recoveryPromptDisplayText(for profile: LaunchProfile?) -> String {
+        guard let profile, profile.agentKind == .gemini else { return "" }
+        return profile.effectiveGeminiRecoveryPrompt
+    }
+
+    static func launchCenterPromptDisplayText(settings: AppSettings, profile: LaunchProfile?) -> String {
+        let persistedPrompt = settings.launchCenterFireAndForgetPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !persistedPrompt.isEmpty {
+            return settings.launchCenterFireAndForgetPrompt
+        }
+        return launchPromptDisplayText(for: profile)
+    }
+
+    static func launchCenterSupportingPromptDisplayText(settings: AppSettings, profile: LaunchProfile?) -> String {
+        let persistedPrompt = settings.launchCenterFireAndForgetSupportingPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !persistedPrompt.isEmpty {
+            return settings.launchCenterFireAndForgetSupportingPrompt
+        }
+        return supportingPromptDisplayText(for: profile)
+    }
+
+    static func launchCenterRecoveryPromptDisplayText(settings: AppSettings, profile: LaunchProfile?) -> String {
+        let persistedPrompt = settings.launchCenterFireAndForgetRecoveryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !persistedPrompt.isEmpty {
+            return settings.launchCenterFireAndForgetRecoveryPrompt
+        }
+        return recoveryPromptDisplayText(for: profile)
+    }
+
+    static func quickLaunchFavoriteProfiles(from profiles: [LaunchProfile]) -> [LaunchProfile] {
+        profiles.filter(\.isFavorite)
+    }
+
+    static func quickLaunchModelDisplayText(for profile: LaunchProfile) -> String {
+        let model: String
+        switch profile.agentKind {
+        case .gemini:
+            model = profile.geminiModelMode == .auto ? "Auto model" : profile.preparedForLaunch().geminiInitialModel
+        case .copilot:
+            model = profile.copilotModel
+        case .codex:
+            model = profile.codexModel
+        case .claudeBypass:
+            model = profile.claudeModel
+        case .kiroCLI:
+            model = ""
+        case .ollamaLaunch:
+            model = profile.ollamaModel
+        case .aider:
+            model = profile.aiderModel
+        }
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedModel.isEmpty ? "Default model" : trimmedModel
+    }
+
+    static func resolvedQuickLaunchFavoriteProfile(
+        favoriteProfile: LaunchProfile,
+        selectedProfile: LaunchProfile?
+    ) -> LaunchProfile {
+        guard favoriteProfile.agentKind == .gemini,
+              let selectedProfile,
+              selectedProfile.id != favoriteProfile.id else {
+            return favoriteProfile
+        }
+
+        var resolved = favoriteProfile
+        let selectedWorkingDirectory = selectedProfile.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selectedWorkingDirectory.isEmpty {
+            resolved.workingDirectory = selectedProfile.workingDirectory
+        }
+
+        if selectedProfile.agentKind == .gemini {
+            resolved.geminiModelMode = selectedProfile.geminiModelMode
+        }
+        return resolved
+    }
+
+    static func profilesMatchForEditorDirtyState(
+        _ lhs: LaunchProfile,
+        _ rhs: LaunchProfile,
+        settings: AppSettings,
+        allProfiles: [LaunchProfile]
+    ) -> Bool {
+        normalizedProfileForEditorDirtyComparison(lhs, settings: settings, allProfiles: allProfiles) ==
+            normalizedProfileForEditorDirtyComparison(rhs, settings: settings, allProfiles: allProfiles)
+    }
+
+    static func normalizedProfileForEditorDirtyComparison(
+        _ profile: LaunchProfile,
+        settings: AppSettings,
+        allProfiles: [LaunchProfile]
+    ) -> LaunchProfile {
+        var normalized = profile
+        normalized.agentKind.providerDefinition.normalizeMissingFields?(&normalized)
+
+        let profileIDs = Set(allProfiles.map(\.id))
+        var seenCompanionIDs: Set<UUID> = []
+        normalized.companionProfileIDs = normalized.companionProfileIDs.filter { companionID in
+            guard companionID != normalized.id,
+                  profileIDs.contains(companionID),
+                  seenCompanionIDs.insert(companionID).inserted else {
+                return false
+            }
+            return true
+        }
+
+        let environmentPresetIDs = Set(settings.environmentPresets.map(\.id))
+        if let presetID = normalized.environmentPresetID, !environmentPresetIDs.contains(presetID) {
+            normalized.environmentPresetID = nil
+        }
+
+        let bootstrapPresetIDs = Set(settings.shellBootstrapPresets.map(\.id))
+        if let presetID = normalized.bootstrapPresetID, !bootstrapPresetIDs.contains(presetID) {
+            normalized.bootstrapPresetID = nil
+        }
+
+        return normalized
     }
 
     static func resolvedQuickLaunchProfile(
@@ -2270,6 +2493,25 @@ private struct ProfileGeneralSection: View {
     let manageSharedPresets: () -> Void
     let onAgentKindChanged: (AgentKind) -> Void
 
+    private var agentKindBinding: Binding<AgentKind> {
+        Binding(
+            get: { profile.agentKind },
+            set: { newValue in
+                guard newValue != profile.agentKind else { return }
+                onAgentKindChanged(newValue)
+            }
+        )
+    }
+
+    private var iTermProfileOptions: [String] {
+        let currentProfile = profile.iTermProfile.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentProfile.isEmpty,
+              !availableITermProfiles.contains(profile.iTermProfile) else {
+            return availableITermProfiles
+        }
+        return [profile.iTermProfile] + availableITermProfiles
+    }
+
     var body: some View {
         GroupBox("General") {
             VStack(alignment: .leading, spacing: 12) {
@@ -2282,12 +2524,11 @@ private struct ProfileGeneralSection: View {
                 TextField("Notes", text: $profile.notes, axis: .vertical)
                     .lineLimit(3...6)
 
-                Picker("Tool", selection: $profile.agentKind) {
+                Picker("Tool", selection: agentKindBinding) {
                     ForEach(AgentKind.allCases) { kind in
                         Text(kind.displayName).tag(kind)
                     }
                 }
-                .onChange(of: profile.agentKind, perform: onAgentKindChanged)
 
                 HStack {
                     TextField("Application / working directory", text: $profile.workingDirectory)
@@ -2318,7 +2559,7 @@ private struct ProfileGeneralSection: View {
                 if profile.terminalApp == .iterm2 {
                     Picker("iTerm2 profile", selection: $profile.iTermProfile) {
                         Text("Default Profile").tag("")
-                        ForEach(availableITermProfiles, id: \.self) { item in
+                        ForEach(iTermProfileOptions, id: \.self) { item in
                             Text(item).tag(item)
                         }
                     }
@@ -2411,32 +2652,60 @@ private struct ProfileGeminiProviderSection: View {
         )
     }
 
+    private var geminiFlavorBinding: Binding<GeminiFlavor> {
+        Binding(
+            get: { profile.geminiFlavor },
+            set: { newValue in
+                guard newValue != profile.geminiFlavor else { return }
+                profile.geminiFlavor = newValue
+                onGeminiFlavorChanged()
+            }
+        )
+    }
+
+    private var geminiYoloBinding: Binding<Bool> {
+        Binding(
+            get: { profile.geminiYolo },
+            set: { newValue in
+                guard newValue != profile.geminiYolo else { return }
+                profile.geminiYolo = newValue
+                if newValue {
+                    profile.geminiAutoContinueMode = .yolo
+                    profile.geminiKeepTryMax = 10
+                    profile.geminiCapacityRetryMs = 500
+                    profile.geminiAutoAllowSessionPermissions = true
+                } else {
+                    profile.geminiAutoContinueMode = .promptOnly
+                    profile.geminiKeepTryMax = 25
+                    profile.geminiCapacityRetryMs = 5_000
+                }
+            }
+        )
+    }
+
     private var geminiModelModeDescription: String {
         switch profile.geminiModelMode {
         case .auto:
             if profile.geminiLaunchMode != .automationRunner {
-                return "Auto uses the model chain and will switch this profile onto Automation Runner mode when launched."
+                return "Auto lets Gemini CLI choose the startup model and will switch this profile onto Automation Runner mode when launched."
             }
-            return "Auto starts on the initial model, then uses the model chain to switch when Gemini hits usage or capacity limits."
+            return "Auto lets Gemini CLI choose the startup model. The model chain is retained for fallback switching when Gemini hits usage or capacity limits."
 
         case .fixed:
             if profile.geminiLaunchMode != .automationRunner {
-                return "Fixed keeps Gemini on the initial model in direct wrapper mode."
+                return "Fixed launches the initial model in direct wrapper mode."
             }
-            return "Fixed keeps Gemini on the initial model and disables automatic model switching."
+            return "Fixed launches the initial model. Hard usage limits still fall through the configured model chain."
         }
     }
 
     var body: some View {
         GroupBox(profile.agentKind.displayName) {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Flavor", selection: $profile.geminiFlavor) {
+                Picker("Flavor", selection: geminiFlavorBinding) {
                     ForEach(GeminiFlavor.allCases) { flavor in
                         Text(flavor.displayName).tag(flavor)
                     }
-                }
-                .onChange(of: profile.geminiFlavor) { _ in
-                    onGeminiFlavorChanged()
                 }
 
                 Picker("Launch mode", selection: $profile.geminiLaunchMode) {
@@ -2501,6 +2770,10 @@ private struct ProfileGeminiProviderSection: View {
                     }
                     .help("Clear initial prompt")
                 }
+                TextField("Supporting prompt", text: $profile.geminiSupportingPrompt)
+                    .help("Prompt sent by continuous Fire & Forget automation, for example continue or continue refactor.")
+                TextField("Recovery prompt", text: $profile.geminiRecoveryPrompt)
+                    .help("Prompt sent when Gemini says the session is concluded after the normal supporting prompt.")
                 TextField("Automation runner path", text: $profile.geminiAutomationRunnerPath)
                 Text("Leave the automation runner path blank to use the app-bundled runner for \(profile.geminiFlavor.displayName).")
                     .font(.caption)
@@ -2528,22 +2801,22 @@ private struct ProfileGeminiProviderSection: View {
                     }
                 }
 
-                Toggle("Resume latest", isOn: $profile.geminiResumeLatest)
-                Toggle("Automation enabled", isOn: $profile.geminiAutomationEnabled)
-                Toggle("CLI YOLO Flag (--yolo)", isOn: $profile.geminiYolo)
-                    .disabled(!profile.geminiFlavor.supportsYoloFlag)
-                    .onChange(of: profile.geminiYolo) { newValue in
-                        if newValue {
-                            profile.geminiAutoContinueMode = .yolo
-                            profile.geminiKeepTryMax = 10
-                            profile.geminiCapacityRetryMs = 500
-                            profile.geminiAutoAllowSessionPermissions = true
-                        } else {
-                            profile.geminiAutoContinueMode = .promptOnly
-                            profile.geminiKeepTryMax = 25
-                            profile.geminiCapacityRetryMs = 5_000
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Model chain exhausted", selection: $profile.geminiModelChainExhaustedAction) {
+                        ForEach(GeminiModelChainExhaustedAction.allCases) { action in
+                            Text(action.displayName).tag(action)
                         }
                     }
+
+                    Text(profile.geminiModelChainExhaustedAction.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Resume latest", isOn: $profile.geminiResumeLatest)
+                Toggle("Automation enabled", isOn: $profile.geminiAutomationEnabled)
+                Toggle("CLI YOLO Flag (--yolo)", isOn: geminiYoloBinding)
+                    .disabled(!profile.geminiFlavor.supportsYoloFlag)
                 if !profile.geminiFlavor.supportsYoloFlag {
                     Text("\(profile.geminiFlavor.displayName) does not support the Gemini CLI `--yolo` flag. Use Auto continue = \(AutoContinueMode.yolo.displayName) for runner-level automation.")
                         .font(.caption)
@@ -3792,7 +4065,7 @@ private struct KeystrokesTabPane: View {
         [
             ("\(automationPrefixLabel) h / \(automationPrefixLabel) ?", "Show in-terminal automation help"),
             ("\(automationPrefixLabel) a", "Toggle automation"),
-            ("\(automationPrefixLabel) o", "Enable automation"),
+            ("\(automationPrefixLabel) o", "Enable automation and continuous continue"),
             ("\(automationPrefixLabel) x", "Disable automation"),
             ("\(automationPrefixLabel) p", "Pause automation temporarily"),
             ("\(automationPrefixLabel) e", "Re-check last visible prompt"),
@@ -3811,6 +4084,19 @@ private struct KeystrokesTabPane: View {
             ("Switch to …", "Switch models when demand keeps repeating"),
             ("Stop", "Stop automation attempt for current prompt")
         ]
+    }
+
+    private var automationRecoverySteps: [(String, String)] {
+        [
+            ("\(automationPrefixLabel) o", "Enable automation in the running terminal and arm continuous supporting prompts."),
+            ("\(automationPrefixLabel) i", "Print the runner status so you can confirm automation is ON."),
+            ("\(automationPrefixLabel) e", "Re-check the visible Gemini prompt if the supporting prompt has not been sent yet."),
+            ("\(automationPrefixLabel) h", "Show the same runner help inside the terminal.")
+        ]
+    }
+
+    private var prefixConflictGuidance: String {
+        "If Ctrl-G opens Vim, a shell widget, or another console instead of the runner prefix prompt, the running terminal is not receiving that prefix as a runner hotkey. Change the Gemini profile Hotkey prefix to ctrl-], ctrl-t, or ctrl-\\, save the launcher state, and relaunch the session. Cmd+Shift+O enables the selected profile for future launches, but an already-running terminal still needs the runner prefix command."
     }
 
     private var exportedKeystrokeText: String {
@@ -3835,6 +4121,13 @@ private struct KeystrokesTabPane: View {
         lines.append("  \(selectedProfileStateLine)")
 
         lines.append("")
+        lines.append("Re-enable supporting prompts in a running terminal")
+        for item in automationRecoverySteps {
+            lines.append("  \(item.0): \(item.1)")
+        }
+        lines.append("  \(prefixConflictGuidance)")
+
+        lines.append("")
         lines.append("In-session menu controls")
         for item in menuOptions {
             lines.append("  \(item.0): \(item.1)")
@@ -3847,7 +4140,7 @@ private struct KeystrokesTabPane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("Keystroke Reference")
+                    Text("Docs and Keystrokes")
                         .font(.title3.bold())
                     Spacer()
                     Button("Copy Keystrokes") {
@@ -3887,6 +4180,29 @@ private struct KeystrokesTabPane: View {
                             .buttonStyle(.bordered)
                             .disabled(!canToggleAutomation)
                         }
+                    }
+                }
+
+                GroupBox("Re-enable supporting prompts in a running terminal") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("The runner prefix is a two-key sequence: press the prefix first, then the command key before the timeout.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        ForEach(Array(automationRecoverySteps.enumerated()), id: \.offset) { _, entry in
+                            let combo = entry.0
+                            let action = entry.1
+                            KeystrokeRow(keys: combo, action: action)
+                        }
+
+                        Text("The supporting prompt is the profile's Supporting prompt value, usually `continue`. The runner sends it only when the Gemini prompt is empty and automation is ON.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text(prefixConflictGuidance)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -4009,9 +4325,6 @@ private struct LaunchCenterPane: View {
     let openInFinder: () -> Void
     let openInVSCode: () -> Void
     let exportSelectedProfileLauncher: () -> Void
-    let launchQuick: (LaunchTemplate) -> Void
-    let updateQuick: (LaunchTemplate) -> Void
-    let canUpdateQuickLaunch: (LaunchTemplate) -> Bool
     let launchFavorite: (LaunchProfile) -> Void
     let updateFavorite: (LaunchProfile) -> Void
     let createWorkbenchFromCurrentProfile: () -> Void
@@ -4020,10 +4333,13 @@ private struct LaunchCenterPane: View {
     let copyCombinedCommands: () -> Void
     let copyAppleScript: () -> Void
     let exportPlanLauncher: () -> Void
+    let saveLauncherState: () -> Void
     let toggleAutomation: () -> Void
     let selectedGeminiModelMode: GeminiModelMode?
     let setSelectedGeminiModelMode: (GeminiModelMode) -> Void
     @Binding var fireAndForgetPrompt: String
+    @Binding var fireAndForgetSupportingPrompt: String
+    @Binding var fireAndForgetRecoveryPrompt: String
     @Binding var isFireAndForgetEnabled: Bool
     @FocusState private var isFireAndForgetPromptFocused: Bool
 
@@ -4044,15 +4360,15 @@ private struct LaunchCenterPane: View {
         switch selectedGeminiModelMode ?? .auto {
         case .auto:
             if profile.geminiLaunchMode != .automationRunner {
-                return "Auto will promote this launch to Automation Runner mode so Gemini can skip to the next model when limits are hit."
+                return "Auto will promote this launch to Automation Runner mode so Gemini CLI can choose the startup model and still collect startup telemetry."
             }
-            return "Auto starts on the initial model, then skips to the next model in the chain when Gemini hits usage or capacity limits."
+            return "Auto lets Gemini CLI choose the startup model; the saved model chain is only used for fallback switching when limits are hit."
 
         case .fixed:
             if profile.geminiLaunchMode != .automationRunner {
-                return "Fixed keeps this launch on Direct Wrapper mode and stays on the initial model."
+                return "Fixed launches the initial model in Direct Wrapper mode."
             }
-            return "Fixed stays on the initial model and disables automatic model switching."
+            return "Fixed launches the initial model. Hard usage limits still fall through the configured model chain."
         }
     }
 
@@ -4069,7 +4385,6 @@ private struct LaunchCenterPane: View {
             VStack(alignment: .leading, spacing: 18) {
                 currentSelectionCard
                 quickLaunchCard
-                quickFavoriteProfilesCard
                 if !isUpdateMode {
                     featuredWorkbenchesCard
                     LaunchPlanPreviewCard(
@@ -4226,6 +4541,12 @@ private struct LaunchCenterPane: View {
                                     Text("Fire & Forget")
                                 }
                                 .toggleStyle(.switch)
+                                Spacer()
+                                Button(action: saveLauncherState) {
+                                    Label("Save", systemImage: "square.and.arrow.down")
+                                }
+                                .buttonStyle(.bordered)
+                                .help("Save the current Launcher state, including Fire & Forget prompts.")
                             }
                             ZStack(alignment: .topLeading) {
                                 if fireAndForgetPrompt.isEmpty {
@@ -4255,8 +4576,22 @@ private struct LaunchCenterPane: View {
                             .onTapGesture {
                                 isFireAndForgetPromptFocused = true
                             }
+                            HStack(spacing: 10) {
+                                Label("Supporting Prompt", systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.headline)
+                                TextField(LaunchProfile.defaultGeminiSupportingPrompt, text: $fireAndForgetSupportingPrompt)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 360)
+                            }
+                            HStack(spacing: 10) {
+                                Label("Recovery Prompt", systemImage: "arrow.uturn.forward")
+                                    .font(.headline)
+                                TextField(LaunchProfile.defaultGeminiRecoveryPrompt, text: $fireAndForgetRecoveryPrompt)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 360)
+                            }
                             Text(isFireAndForgetEnabled
-                                 ? "Gemini CLI clicks will inject this prompt and launch in continuous mode."
+                                 ? "Gemini CLI clicks will inject this prompt and use the supporting and recovery prompts in continuous mode."
                                  : "Gemini CLI clicks will inject this prompt on launch. Enable Fire & Forget for continuous mode.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -4277,12 +4612,14 @@ private struct LaunchCenterPane: View {
         }
     }
 
-    private var quickFavoriteProfilesCard: some View {
-        if favoriteProfiles.isEmpty { return AnyView(EmptyView()) }
-        return AnyView(
-            GroupBox(isUpdateMode ? "Favorite CLI Updates" : "Quick Favorites") {
-                VStack(alignment: .leading, spacing: 12) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+    private var quickLaunchCard: some View {
+        GroupBox(isUpdateMode ? "CLI Updates" : "Quick Launch") {
+            VStack(alignment: .leading, spacing: 12) {
+                if favoriteProfiles.isEmpty {
+                    Text("Mark profiles as Favorite to show them here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 12)], spacing: 12) {
                         ForEach(favoriteProfiles) { profile in
                             let canTrigger = !isUpdateMode || profile.resolvedUpdateCommand != nil
                             Button {
@@ -4292,74 +4629,31 @@ private struct LaunchCenterPane: View {
                                     launchFavorite(profile)
                                 }
                             } label: {
-                                VStack(alignment: .leading, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 10) {
                                     Label(
                                         profile.name,
                                         systemImage: isUpdateMode ? "arrow.triangle.2.circlepath" : "star.fill"
                                     )
                                         .font(.headline)
-                                    Text(
-                                        isUpdateMode
-                                            ? (profile.resolvedUpdateCommand != nil ? "Run update command" : "Update unavailable")
-                                            : profile.agentKind.displayName
-                                    )
+                                    Text(ContentView.quickLaunchModelDisplayText(for: profile))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
-                                .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+                                .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
                                 .opacity(canTrigger ? 1 : 0.45)
                             }
                             .buttonStyle(.plain)
                             .disabled(!canTrigger)
+                            .help(
+                                isUpdateMode && !canTrigger
+                                    ? "Update unavailable"
+                                    : ContentView.quickLaunchModelDisplayText(for: profile)
+                            )
                         }
-                    }
-                }
-            }
-        )
-    }
-
-    private var quickLaunchCard: some View {
-        GroupBox(isUpdateMode ? "CLI Updates" : "Quick Launch") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(
-                    isUpdateMode
-                        ? "Update mode is active. Click the CLI you want to update. Gemini flavor cards reuse the saved profile for that flavor when one exists."
-                        : "Start a fresh iTerm2 session from a ready-made launcher template. Gemini flavor cards reuse the saved profile for that flavor when one exists."
-                )
-                    .foregroundStyle(.secondary)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 12)], spacing: 12) {
-                    ForEach(LaunchTemplateCatalog.quickLaunchTemplates) { template in
-                        let canTrigger = !isUpdateMode || canUpdateQuickLaunch(template)
-                        Button {
-                            if isUpdateMode {
-                                updateQuick(template)
-                            } else {
-                                launchQuick(template)
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Label(
-                                    template.title,
-                                    systemImage: isUpdateMode ? "arrow.triangle.2.circlepath" : template.systemImage
-                                )
-                                    .font(.headline)
-                                Text(
-                                    isUpdateMode
-                                        ? (canUpdateQuickLaunch(template) ? "Run update command" : "Update unavailable")
-                                        : template.agentKind.summary
-                                )
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                            .opacity(canTrigger ? 1 : 0.45)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canTrigger)
                     }
                 }
             }
